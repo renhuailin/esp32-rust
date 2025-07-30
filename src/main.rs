@@ -12,7 +12,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::prelude::*;
 
 use esp_idf_sys::EspError;
-use esp_idf_test2::{lcd, wifi::wifi};
+use esp_idf_test2::{lcd, led::WS2812RMT, wifi::wifi};
 use log::info;
 use mipidsi::error;
 
@@ -74,6 +74,21 @@ fn main() {
 
     lcd::LcdSt7789::init(driver, dc.into(), cs.into());
 
+    let led = pins.gpio38;
+    let channel = peripherals.rmt.channel0;
+    let mut ws2812 = WS2812RMT::new(led, channel).unwrap();
+    // loop {
+    //     info!("Red!");
+    //     ws2812.set_pixel(rgb::RGB8::new(255, 0, 0)).unwrap();
+    //     FreeRtos::delay_ms(1000);
+    //     info!("Green!");
+    //     ws2812.set_pixel(rgb::RGB8::new(0, 255, 0)).unwrap();
+    //     FreeRtos::delay_ms(1000);
+    //     info!("Blue!");
+    //     ws2812.set_pixel(rgb::RGB8::new(0, 0, 255)).unwrap();
+    //     FreeRtos::delay_ms(1000);
+    // }
+
     /*
     // 初始化ILI9341
     let dc = pins.gpio4;
@@ -97,9 +112,4 @@ fn main() {
     lcd::LcdIli9341::init(driver, dc.into(), rst.into(), cs.into());
     */
 
-    log::info!("Hello, world!");
-
-    // loop {
-
-    // }
 }

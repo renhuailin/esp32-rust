@@ -26,7 +26,8 @@ experimental = ["esp-idf-svc/experimental"]
 log = "0.4"
 esp-idf-svc = "0.51"
 
-esp-idf-hal = "0.45.2"
+# esp-idf-hal = "0.45.2"
+esp-idf-hal = { version = "=0.45.2", features = ["rmt-legacy"] }
 
 esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
 
@@ -60,6 +61,7 @@ display-interface-spi = "0.4.1"
 anyhow = "1"
 toml-cfg = "0.2.0"
 axp173 = "0.1.7"
+rgb = "0.8.52"
 
 
 [build-dependencies]

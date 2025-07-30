@@ -19,57 +19,63 @@ use mipidsi::{Builder, Orientation};
 pub struct LcdSt7789;
 
 impl LcdSt7789 {
-    pub fn init(peripherals: Peripherals) {
-        let pins = peripherals.pins;
-        let spi3 = peripherals.spi3;
-        // 2. 根据 diagram.json 配置引脚
-        // 控制引脚
-        // #define DISPLAY_MOSI_PIN      GPIO_NUM_4
-        // #define DISPLAY_CLK_PIN       GPIO_NUM_5
-        // #define DISPLAY_DC_PIN        GPIO_NUM_7
-        // #define DISPLAY_RST_PIN       GPIO_NUM_NC
-        // #define DISPLAY_CS_PIN        GPIO_NUM_6
-        let dc =
-            PinDriver::<esp_idf_hal::gpio::Gpio7, esp_idf_hal::gpio::Output>::output(pins.gpio7)
-                .unwrap();
+    pub fn init(
+        driver: SpiDriver<'_>,
+        dc_pin: gpio::AnyOutputPin,
+        chip_select_pin: gpio::AnyOutputPin,
+    ) {
+        // let pins = peripherals.pins;
+        // let spi3 = peripherals.spi3;
 
-        // SPI 总线引脚 (使用硬件 SPI2)
-        let sck = pins.gpio5;
-        let sdi = pins.gpio4; // MOSI 在驱动中通常被称为 SDI (Serial Data In)
-        let sdo = Option::<esp_idf_hal::gpio::Gpio13>::None; // MISO
-        let cs = pins.gpio6; // 直接使用引脚，而不是PinDriver
+        // // 2. 根据 diagram.json 配置引脚
+        // // 控制引脚
+        // // #define DISPLAY_MOSI_PIN      GPIO_NUM_4
+        // // #define DISPLAY_CLK_PIN       GPIO_NUM_5
+        // // #define DISPLAY_DC_PIN        GPIO_NUM_7
+        // // #define DISPLAY_RST_PIN       GPIO_NUM_NC
+        // // #define DISPLAY_CS_PIN        GPIO_NUM_6
+        // let dc =
+        //     PinDriver::<esp_idf_hal::gpio::Gpio7, esp_idf_hal::gpio::Output>::output(pins.gpio7)
+        //         .unwrap();
 
-        // 3. 初始化 SPI 驱动
-        // 创建 SPI 驱动程序实例
-        let driver = SpiDriver::new(
-            spi3, // 使用 SPI3
-            sck,
-            sdi,
-            sdo,
-            &Default::default(),
-        )
-        .unwrap();
+        // // SPI 总线引脚 (使用硬件 SPI2)
+        // let sck = pins.gpio5;
+        // let sdi = pins.gpio4; // MOSI 在驱动中通常被称为 SDI (Serial Data In)
+        // let sdo = Option::<esp_idf_hal::gpio::Gpio13>::None; // MISO
+        // let cs = pins.gpio6; // 直接使用引脚，而不是PinDriver
+
+        // // 3. 初始化 SPI 驱动
+        // // 创建 SPI 驱动程序实例
+        // let driver = SpiDriver::new(
+        //     spi3, // 使用 SPI3
+        //     sck,
+        //     sdi,
+        //     sdo,
+        //     &Default::default(),
+        // )
+        // .unwrap();
 
         const rate: u32 = 80 * 1000 * 1000;
         // 创建一个 SPI 设备驱动，它包含了 CS 片选和通信速率等配置
         let spi_config = SpiConfig::new().baudrate(rate.Hz());
-        let spi_device = SpiDeviceDriver::new(driver, Some(cs), &spi_config).unwrap();
+        let spi_device = SpiDeviceDriver::new(driver, Some(chip_select_pin), &spi_config).unwrap();
 
         println!("SPI 初始化完成!");
 
         // // 创建显示接口
         // let di = SPIInterface::new(spi_device, dc, cs);
-
+        let dc =
+            PinDriver::<gpio::AnyOutputPin, esp_idf_hal::gpio::Output>::output(dc_pin).unwrap();
         let di = SPIInterfaceNoCS::new(spi_device, dc);
 
         let mut delay = Delay::new_default();
         let reset_pin: Option<
-            esp_idf_hal::gpio::PinDriver<esp_idf_hal::gpio::Gpio7, esp_idf_hal::gpio::Output>,
+            esp_idf_hal::gpio::PinDriver<gpio::AnyIOPin, esp_idf_hal::gpio::Output>,
         > = None;
         let mut display: mipidsi::Display<
             _,
             _,
-            esp_idf_hal::gpio::PinDriver<esp_idf_hal::gpio::Gpio7, esp_idf_hal::gpio::Output>,
+            esp_idf_hal::gpio::PinDriver<gpio::AnyIOPin, esp_idf_hal::gpio::Output>,
         > = Builder::st7789(di).init(&mut delay, reset_pin).unwrap(); // delay provider from your MCU
 
         display.clear(Rgb565::BLACK).unwrap();

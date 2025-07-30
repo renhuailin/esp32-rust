@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "editor": "wokwi",
+  "author": "任懷林 <renhuailin@gmail.com>",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": -240.18,
+      "left": 71.77,
+      "attrs": { "flashSize": "16" }
+    },
+    {
+      "type": "wokwi-ili9341",
+      "id": "lcd",
+      "top": -239.2,
+      "left": -201.9,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    ["esp:TX", "$serialMonitor:RX", "", []],
+    ["esp:RX", "$serialMonitor:TX", "", []],
+    ["esp:GND.2", "lcd:GND", "black", ["h19.2", "v307.2", "h-460.8"]],
+    ["esp:3V3.1", "lcd:VCC", "red", ["h-19.25", "v316.8", "h-345.6"]],
+    ["esp:10", "lcd:CS", "orange", ["h-28.85", "v153.6", "h-316.8"]],
+    ["esp:4", "lcd:D/C", "purple", ["h-9.65", "v259.2", "h-316.8"]],
+    ["esp:11", "lcd:MOSI", "green", ["h-38.45", "v124.8", "h-278.39"]],
+    ["esp:12", "lcd:SCK", "blue", ["h-48.05", "v105.6", "h-259.19"]],
+    ["esp:13", "lcd:MISO", "yellow", ["h-57.65", "v86.4", "h-230.39"]]
+  ],
+  "serialMonitor": {
+    "display": "terminal",
+    "convertEol": true
+  }
+}

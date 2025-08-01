@@ -1,9 +1,7 @@
-use anyhow::bail;
-use axp173::Axp173;
 use esp_idf_hal::{
-    delay::FreeRtos,
     gpio::{self, AnyInputPin, AnyOutputPin, PinDriver},
     i2c::{I2cConfig, I2cDriver},
+    ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
     peripheral::Peripheral,
     prelude::*,
     spi::SpiDriver,
@@ -12,7 +10,12 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::prelude::*;
 
 use esp_idf_sys::EspError;
-use esp_idf_test2::{lcd, led::WS2812RMT, wifi::wifi};
+use esp_idf_test2::{
+    axp173::{Axp173, Ldo},
+    lcd,
+    led::WS2812RMT,
+    wifi::wifi,
+};
 use log::info;
 use mipidsi::error;
 
@@ -36,14 +39,44 @@ fn main() {
     let sda = pins.gpio1;
     let scl = pins.gpio2;
     let i2c = peripherals.i2c1;
-    let config = I2cConfig::new().baudrate(100.kHz().into());
+    let config = I2cConfig::new();
     let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
     // 2. 创建AXP173驱动实例
-    let mut axp = Axp173::new(i2c_driver);
-    axp.init().unwrap();
+    let mut axp173: Axp173<I2cDriver<'_>> = Axp173::new(i2c_driver);
+    axp173.init().unwrap();
+
+    // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。
+    // 所以要设置LDO4的电压为3.3V  (3300 - 700) / 25 = 104
+    let ldo4 = Ldo::ldo4_with_voltage(104, true);
+
+    // 根据axp173手册，LDO2,LDO3的电压由一个byte,低4位bit表示LDO3的电压，高4位表示LDO2的电压，电压范围是：1.8-3.3V， 100mV/step，每个bit表示100mV。
+    // 所以要设置LDO2,LDO3的电压为2.8V  (2800 - 1800) / 100 = 10
+    let ldo2 = Ldo::ldo2_with_voltage(10, true);
+    axp173.enable_ldo(&ldo2).unwrap();
+    axp173.enable_ldo(&ldo4).unwrap();
+
+    let power_control_value = axp173.read_u8(0x33).unwrap();
+    println!("Power controller reg: {:b}", power_control_value);
 
     // 初始化 LCD 屏幕
+
+    // 1. 配置LEDC定时器
+    let timer_driver = LedcTimerDriver::new(
+        peripherals.ledc.timer0,
+        &TimerConfig::new().frequency(25000.Hz().into()),
+    )
+    .unwrap();
+
+    let backlight_pin = pins.gpio8;
+
+    // 2. 配置LEDC通道，并绑定到背光引脚
+    let mut channel =
+        LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
+
+    // 3. 设置亮度 (通过设置占空比)
+    let max_duty = channel.get_max_duty();
+    channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
 
     // 初始化 ST7789 屏幕
 
@@ -111,5 +144,4 @@ fn main() {
 
     lcd::LcdIli9341::init(driver, dc.into(), rst.into(), cs.into());
     */
-
 }

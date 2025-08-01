@@ -14,7 +14,7 @@ use esp_idf_hal::{
 };
 use esp_idf_hal::{gpio, spi::SpiConfig};
 // 删除错误的导入
-use mipidsi::{Builder, Orientation};
+use mipidsi::{Builder, ColorOrder, Orientation};
 
 pub struct LcdSt7789;
 
@@ -55,9 +55,11 @@ impl LcdSt7789 {
         // )
         // .unwrap();
 
-        const rate: u32 = 80 * 1000 * 1000;
+        // --- 步骤 2: 打开背光电源 ---        
+
+        const RATE: u32 = 80 * 1000 * 1000;
         // 创建一个 SPI 设备驱动，它包含了 CS 片选和通信速率等配置
-        let spi_config = SpiConfig::new().baudrate(rate.Hz());
+        let spi_config = SpiConfig::new().baudrate(RATE.Hz());
         let spi_device = SpiDeviceDriver::new(driver, Some(chip_select_pin), &spi_config).unwrap();
 
         println!("SPI 初始化完成!");
@@ -76,12 +78,14 @@ impl LcdSt7789 {
             _,
             _,
             esp_idf_hal::gpio::PinDriver<gpio::AnyIOPin, esp_idf_hal::gpio::Output>,
-        > = Builder::st7789(di).init(&mut delay, reset_pin).unwrap(); // delay provider from your MCU
-
-        display.clear(Rgb565::BLACK).unwrap();
+        > = Builder::st7789(di)
+            .with_color_order(ColorOrder::Rgb)
+            .init(&mut delay, reset_pin)
+            .unwrap(); // delay provider from your MCU
         display
             .set_orientation(Orientation::Portrait(true))
             .unwrap();
+        display.clear(Rgb565::RED).unwrap();
 
         // 创建一个文本样式
         let style = MonoTextStyle::new(&FONT_8X13, Rgb565::WHITE);

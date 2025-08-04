@@ -83,9 +83,9 @@ impl LcdSt7789 {
             .init(&mut delay, reset_pin)
             .unwrap(); // delay provider from your MCU
         display
-            .set_orientation(Orientation::Portrait(true))
+            .set_orientation(Orientation::LandscapeInverted(true))
             .unwrap();
-        display.clear(Rgb565::RED).unwrap();
+        display.clear(Rgb565::BLACK).unwrap();
 
         // 创建一个文本样式
         let style = MonoTextStyle::new(&FONT_8X13, Rgb565::WHITE);
@@ -93,7 +93,7 @@ impl LcdSt7789 {
         // 创建文本对象
         Text::new(
             "Hello, Rust!!",
-            Point::new(70, 150), // 文本左上角在屏幕上的位置
+            Point::new(30, 30), // 文本左上角在屏幕上的位置
             style,
         )
         .draw(&mut display) // 绘制文本

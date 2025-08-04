@@ -61,23 +61,24 @@ fn main() {
 
     // 初始化 LCD 屏幕
 
-    // 1. 配置LEDC定时器
-    let timer_driver = LedcTimerDriver::new(
-        peripherals.ledc.timer0,
-        &TimerConfig::new().frequency(25000.Hz().into()),
-    )
-    .unwrap();
+    // // 1. 配置LEDC定时器
+    // let timer_driver = LedcTimerDriver::new(
+    //     peripherals.ledc.timer0,
+    //     &TimerConfig::new().frequency(25000.Hz().into()),
+    // )
+    // .unwrap();
+    // // 创建背光控制引脚
+    // let backlight_pin = pins.gpio8;
 
-    let backlight_pin = pins.gpio8;
+    // // 2. 配置LEDC通道，并绑定到背光引脚
+    // let mut channel =
+    //     LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
 
-    // 2. 配置LEDC通道，并绑定到背光引脚
-    let mut channel =
-        LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
+    // // 3. 设置亮度 (通过设置占空比)
+    // let max_duty = channel.get_max_duty();
+    // channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为75%的亮度
 
-    // 3. 设置亮度 (通过设置占空比)
-    let max_duty = channel.get_max_duty();
-    channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
-
+    
     // 初始化 ST7789 屏幕
 
     // // 2. 根据 diagram.json 配置引脚
@@ -107,9 +108,12 @@ fn main() {
 
     lcd::LcdSt7789::init(driver, dc.into(), cs.into());
 
-    let led = pins.gpio38;
-    let channel = peripherals.rmt.channel0;
-    let mut ws2812 = WS2812RMT::new(led, channel).unwrap();
+    // info!("关闭背光!");
+    // channel.set_duty(0).unwrap();//关闭背光
+
+    // let led = pins.gpio38;
+    // let channel = peripherals.rmt.channel0;
+    // let mut ws2812 = WS2812RMT::new(led, channel).unwrap();
     // loop {
     //     info!("Red!");
     //     ws2812.set_pixel(rgb::RGB8::new(255, 0, 0)).unwrap();

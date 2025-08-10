@@ -63,10 +63,12 @@ toml-cfg = "0.2.0"
 # axp173 = "0.1.7"
 # axp173 = { git = "https://github.com/renhuailin/axp173-rs.git" }
 rgb = "0.8.52"
+lewton = "0.10.2"
 
 byteorder = { version = "1", default-features = false }
 bitflags = "1"
 bit_field = "0.10"
+
 
 [build-dependencies]
 embuild = "0.33"

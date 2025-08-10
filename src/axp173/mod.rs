@@ -46,24 +46,24 @@ pub enum Error<E> {
 }
 
 /// AXP173 PMIC instance.
-pub struct Axp173<I> {
-    i2c: I,
+pub struct Axp173<'a, I> {
+    i2c:  &'a mut I,
 }
 
-impl<I, E> Axp173<I>
+impl<'a, I, E> Axp173<'a, I>
 where
     I: WriteRead<Error = E> + Write<Error = E>,
 {
     /// Side-effect-free constructor.
     /// Nothing will be read or written before `init()` call.
-    pub fn new(i2c: I) -> Self {
+    pub fn new(i2c: &'a mut I) -> Self {
         Axp173 { i2c }
     }
 
-    /// Consumes the driver and gives I2C bus back.
-    pub fn free(self) -> I {
-        self.i2c
-    }
+    // /// Consumes the driver and gives I2C bus back.
+    // pub fn free(self) -> &'a I {
+    //     self.i2c
+    // }
 
     /// Checks the I2C connection to the AXP173 chip.
     /// AXP173 doesn't have a dedicated chip ID register and connection is checked by reading

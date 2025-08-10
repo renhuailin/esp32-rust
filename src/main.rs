@@ -42,10 +42,10 @@ fn main() {
     let scl = pins.gpio2;
     let i2c = peripherals.i2c1;
     let config = I2cConfig::new();
-    let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
+    let mut i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
     // 2. 创建AXP173驱动实例
-    let mut axp173: Axp173<I2cDriver<'_>> = Axp173::new(i2c_driver);
+    let mut axp173: Axp173<I2cDriver<'_>> = Axp173::new(&mut i2c_driver);
     axp173.init().unwrap();
 
     // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。

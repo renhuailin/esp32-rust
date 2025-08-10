@@ -85,11 +85,6 @@ where
         self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
         self.write_reg(ES8311_ADC_REG_1C, 0x6A)?;
 
-        // // 4. 配置DAC输出
-        // self.write_reg(ES8311_DAC_CONTROL_REG_01, 0x18)?; // LOUT1和ROUT1开启
-        // self.write_reg(ES8311_DAC_CONTROL_REG_02, 0x02)?; // DAC L/R 通道开启
-        // self.write_reg(ES8311_DAC_CONTROL_REG_03, 0x00)?; // DAC L/R 数据源正常
-
         // 5. 设置默认音量 (0-33, 0是最大声, 33是静音)
         self.set_voice_volume(20)?; // 设置一个适中的音量
 

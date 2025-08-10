@@ -1,18 +1,23 @@
 use esp_idf_hal::{
-    delay::FreeRtos,
-    gpio::{self, AnyInputPin, AnyOutputPin, PinDriver},
+    delay::{Delay, FreeRtos, BLOCK},
+    gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
     i2c::{I2cConfig, I2cDriver},
+    i2s::{
+        config::{DataBitWidth, StdConfig},
+        I2sBiDir, I2sDriver,
+    },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
-    peripheral::Peripheral,
     prelude::*,
     rmt::RmtChannel,
     spi::SpiDriver,
 };
+
+use esp_idf_hal::delay;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::prelude::*;
-
 use esp_idf_sys::EspError;
 use esp_idf_test2::{
+    audio,
     axp173::{Axp173, Ldo},
     lcd,
     led::WS2812RMT,
@@ -111,8 +116,6 @@ fn main() {
 
     // channel.set_duty(0).unwrap(); // 设置为50%的亮度
 
-
-
     // // show led demo
     // let led = pins.gpio38;
     // let channel: esp_idf_hal::rmt::CHANNEL0 = peripherals.rmt.channel0;
@@ -140,6 +143,55 @@ fn main() {
 
     lcd::LcdIli9341::init(driver, dc.into(), rst.into(), cs.into());
     */
+
+    //初始化es8311音频解码器
+    let mut es8311 = audio::es8311::Es8311::new(&mut i2c_driver);
+    let mut delay = Delay::new_default();
+    match es8311.init(&mut delay) {
+        Ok(_) => {
+            println!("初始化ES8311成功");
+        },
+        Err(e) => {
+            println!("初始化ES8311失败:{:?}", e);
+            return
+        }
+    }
+
+    // 初始化I2S
+    let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
+    let peripherals = Peripherals::take().unwrap();
+    let bclk = peripherals.pins.gpio42;
+    let din = peripherals.pins.gpio45;
+    let dout = peripherals.pins.gpio39;
+    let mclk = peripherals.pins.gpio41.into();
+    let ws = peripherals.pins.gpio40;
+    let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+        peripherals.i2s0,
+        &std_config,
+        bclk,
+        din,
+        dout,
+        mclk,
+        ws,
+    )
+    .unwrap();
+
+    const PCM_DATA: &'static [u8] = include_bytes!("../assets/sound.pcm");
+
+    info!(
+        "Embedded PCM data size: {} bytes. Starting playback...",
+        PCM_DATA.len()
+    );
+    match i2s_driver.write_all(PCM_DATA, BLOCK) {
+        Ok(_) => info!("Playback finished successfully!"),
+        Err(e) => println!("I2S write error: {:?}", e),
+    }
+
+    info!("Test complete. Entering infinite loop.");
+
+    loop {
+        FreeRtos::delay_ms(1000);
+    }
 }
 
 fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {

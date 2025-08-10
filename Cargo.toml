@@ -67,7 +67,6 @@ rgb = "0.8.52"
 byteorder = { version = "1", default-features = false }
 bitflags = "1"
 bit_field = "0.10"
-opus-embedded = "0.1.1"
 
 [build-dependencies]
 embuild = "0.33"

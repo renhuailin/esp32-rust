@@ -93,7 +93,7 @@ impl Irq {
     }
 }
 
-impl<'a, I, E> Axp173<'a, I>
+impl<I, E> Axp173<I>
 where
     I: WriteRead<Error = E> + Write<Error = E>,
 {

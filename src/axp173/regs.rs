@@ -139,8 +139,8 @@ pub const POWER_DATA_BUFFER4: u8 = 0x09;
 
 pub const POWER_VERSION: u8 = 0x0C;
 
-pub const POWER_LDO3_DC2_CTL: u8 = 0x10;
-pub const POWER_LDO24_DC13_CTL: u8 = 0x12;
+pub const POWER_EXTEN_REG_10: u8 = 0x10;
+pub const POWER_LDO24_DC13_CTL_REG_12: u8 = 0x12;
 pub const POWER_DC2OUT_VOL: u8 = 0x23;
 pub const POWER_LDO3_DC2_VRC: u8 = 0x25;
 pub const POWER_DC1OUT_VOL: u8 = 0x26;

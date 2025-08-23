@@ -68,6 +68,7 @@ lewton = "0.10.2"
 byteorder = { version = "1", default-features = false }
 bitflags = "1"
 bit_field = "0.10"
+shared-bus = "0.3.1"
 
 
 [build-dependencies]

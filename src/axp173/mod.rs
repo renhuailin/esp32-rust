@@ -46,17 +46,17 @@ pub enum Error<E> {
 }
 
 /// AXP173 PMIC instance.
-pub struct Axp173<'a, I> {
-    i2c:  &'a mut I,
+pub struct Axp173<I> {
+    i2c: I,
 }
 
-impl<'a, I, E> Axp173<'a, I>
+impl<I, E> Axp173<I>
 where
     I: WriteRead<Error = E> + Write<Error = E>,
 {
     /// Side-effect-free constructor.
     /// Nothing will be read or written before `init()` call.
-    pub fn new(i2c: &'a mut I) -> Self {
+    pub fn new(i2c: I) -> Self {
         Axp173 { i2c }
     }
 
@@ -69,14 +69,30 @@ where
     /// AXP173 doesn't have a dedicated chip ID register and connection is checked by reading
     /// on-chip buffer for a presence of default values.
     pub fn init(&mut self) -> OperationResult<E> {
-        self.read_u8(POWER_DATA_BUFFER1).map_err(Error::I2c)?;
-
-        let buf = self.read_onchip_buffer()?;
-
-        match buf {
-            AXP173_ON_CHIP_BUFFER_DEFAULT => Ok(()),
-            _ => Err(Error::InvalidChip(buf)),
-        }
+        self.write_u8(0x12, 0b00000111).map_err(Error::I2c)?; // REG 12H: 电源输出控制 7保留/6EXTEN关闭/5保留/4 DC-DC2关闭/3 LDO3关闭/2 LDO2开启/1 LDO4开启/0 DC-DC1开启
+        let v: u16 = (3300 - 700) / 25;
+        println!("DC-DC1输出电压设置: {:08b}", v);
+        self.write_u8(0x26, v as u8).map_err(Error::I2c)?; // REG 26H: DC-DC1输出电压设置 7-6保留/6-0 Bit6-Bit0 3.3V
+        self.write_u8(0x27, v as u8).map_err(Error::I2c)?; // REG 27H: LDO4输出电压设置  7-6保留/6-0 Bit6-Bit0 3.3V
+        self.write_u8(0x28, 0b10101010).map_err(Error::I2c)?; // REG 28H: LDO23输出电压设置2.8V
+        self.write_u8(0x33, 0b11000100).map_err(Error::I2c)?; // REG 33H: 充电控制1 4.2V 450mA
+        self.write_u8(0x36, 0b01101100).map_err(Error::I2c)?; // REG 36H: PEK按键参数设置短按开机，长按4s关机
+                                                              //self.write_u8(0x10, 0b00000000);        // REG 10H: EXTEN 做为音频使能控制，初始时关闭
+        //写一遍默认值避免遇到定制芯片
+        self.write_u8(0x30, 0b01001000).map_err(Error::I2c)?; // REG 30H: VBUS-IPSOUT通路管理
+        self.write_u8(0x31, 0b00000001).map_err(Error::I2c)?; // REG 31H: VOFF关机电压设置2.7V
+        self.write_u8(0x32, 0b01000000).map_err(Error::I2c)?; // REG 32H: 关机设置、电池检测以及CHGLED管脚控制
+        self.write_u8(0x3A, 0x68).map_err(Error::I2c)?; // REG 3AH: APS 低电级别1
+        self.write_u8(0x3B, 0x5F).map_err(Error::I2c)?; // REG 3AH: APS 低电级别2
+        self.write_u8(0x84, 0b00110100).map_err(Error::I2c)?; // REG 84H: ADC采样速率设置，TS管脚控制
+        self.write_u8(0x8A, 0b00000000).map_err(Error::I2c)?; // REG 8AH: 定时器控制
+        self.write_u8(0x8B, 0b00000000).map_err(Error::I2c)?; // REG 8BH: VBUS管脚监测SRP功能控制
+        self.write_u8(0x8F, 0b00000000).map_err(Error::I2c)?; // REG 8FH: 过温关机等功能设置
+        self.write_u8(0x40, 0b11011110).map_err(Error::I2c)?; // REG 40H: IRQ使能1
+        self.write_u8(0x41, 0b11111111).map_err(Error::I2c)?; // REG 41H: IRQ使能2
+        self.write_u8(0x42, 0b10111011).map_err(Error::I2c)?; // REG 42H: IRQ使能3
+        self.write_u8(0x43, 0b11110011).map_err(Error::I2c)?; // REG 42H: IRQ使能4
+        Ok(())
     }
 
     /// Checks the I2C connection to the AXP173 chip but doesn't consume I2C bus.
@@ -84,6 +100,28 @@ where
         let mut buf = [0; 1];
         let reg = POWER_DATA_BUFFER1;
         i2c.write_read(AXP173_ADDR, &[reg], &mut buf).is_ok()
+    }
+
+    /// Turns on/off the external power supply
+    pub fn set_exten(&mut self, on: bool) -> OperationResult<E> {
+        let mut bit = self.read_u8(POWER_EXTEN_REG_10).map_err(Error::I2c)?;
+        println!("AXP 173 POWER_EXTEN_REG_10={:08b}", bit);
+
+        if on {
+            bit |= 1 << 2;
+            self.write_u8(POWER_EXTEN_REG_10, bit).map_err(Error::I2c)?;
+
+            // bit |= 1 << 0;
+            // self.write_u8(POWER_EXTEN_REG_10, bit).map_err(Error::I2c)?;
+
+        } else {
+            bit &= !(1 << 2);
+            self.write_u8(POWER_EXTEN_REG_10, bit).map_err(Error::I2c)?;
+        }
+
+        bit = self.read_u8(POWER_EXTEN_REG_10).map_err(Error::I2c)?;
+        println!("AXP 173 POWER_EXTEN_REG_10={:08b}", bit);
+        Ok(())
     }
 
     /// Reads 6-byte user data buffer from the chip.

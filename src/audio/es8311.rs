@@ -1,5 +1,7 @@
 // src/es8311.rs
 
+use std::sync::Arc;
+
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
 
@@ -7,7 +9,8 @@ use embedded_hal::blocking::i2c::{Write, WriteRead};
 pub type Result<T, E> = core::result::Result<T, E>;
 
 // ES8311 默认的I2C从机地址
-const ADDR: u8 = 0x30;
+// const ADDR: u8 = 0x30;
+const ADDR: u8 = 0x18;
 
 // --- ES8311 寄存器地址定义 ---
 // (这些地址来自ES8311数据手册)
@@ -39,16 +42,16 @@ const ES8311_ADC_REG_1C: u8 = 0x1C;
 const ES8311_DAC_VOLUME_REG_32: u8 = 0x32;
 
 /// 代表ES8311音频编解码器驱动
-pub struct Es8311<'a, I2C> {
-    i2c: &'a mut I2C,
+pub struct Es8311<I2C> {
+    i2c: I2C,
 }
 
-impl<'a, I2C, E> Es8311<'a, I2C>
+impl<I2C, E> Es8311<I2C>
 where
     I2C: Write<Error = E> + WriteRead<Error = E>,
 {
     /// 创建一个新的ES8311驱动实例
-    pub fn new(i2c: &'a mut I2C) -> Self {
+    pub fn new(i2c: I2C) -> Self {
         Self { i2c }
     }
 
@@ -56,14 +59,24 @@ where
     /// 这是最关键的函数，它按照datasheet的推荐序列来配置芯片
     pub fn init<D: DelayUs<u32>>(&mut self, delay: &mut D) -> Result<(), E> {
         println!("开始初始化ES8311");
+
+        // let b = self.read_u8(ES8311_GPIO_REG_44);
+
+        // match b {
+        //     Ok(b) => {
+        //         println!("{}=0x{:X}={:08b}", b, b, b);
+        //     }
+        //     Err(_) => {
+        //         println!("读取ES8311 reg 失败");
+        //     }
+        // }
+
         // 1. 复位芯片
         // self.write_reg(ES8311_RESET_REG, 0x80)?; // 复位数字部分
         self.write_reg(ES8311_GPIO_REG_44, 0x08)?;
         println!("写入了一个ES8311寄存器");
         delay.delay_us(50_000); // 等待50ms
                                 // self.write_reg(ES8311_RESET_REG, 0x00)?; // 恢复正常
-
-        
 
         /* Enhance ES8311 I2C noise immunity */
         self.write_reg(ES8311_GPIO_REG_44, 0x08)?; // 复位数字部分
@@ -89,6 +102,8 @@ where
         self.write_reg(ES8311_SYSTEM_REG_13, 0x10)?; //enable output to HP driver
         self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
         self.write_reg(ES8311_ADC_REG_1C, 0x6A)?;
+
+        self.write_reg(ES8311_RESET_REG, 0x80)?;
 
         // 5. 设置默认音量 (0-33, 0是最大声, 33是静音)
         self.set_voice_volume(20)?; // 设置一个适中的音量

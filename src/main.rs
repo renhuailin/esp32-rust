@@ -25,6 +25,7 @@ use esp_idf_test2::{
 };
 use log::info;
 use mipidsi::error;
+use shared_bus::BusManagerSimple;
 
 fn main() {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -39,32 +40,48 @@ fn main() {
     let pins = peripherals.pins;
     let spi3 = peripherals.spi3;
 
-    // init_wifi(peripherals, sysloop, &app_config)?;
-
     // 1. 初始化I2C总线。
     //    !!! 警告: 您必须根据开发板的原理图，确认AXP173连接的是哪个I2C总线和引脚！
     let sda = pins.gpio1;
     let scl = pins.gpio2;
     let i2c = peripherals.i2c1;
     let config = I2cConfig::new();
-    let mut i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
-    // 2. 创建AXP173驱动实例
-    let mut axp173: Axp173<I2cDriver<'_>> = Axp173::new(&mut i2c_driver);
-    axp173.init().unwrap();
+    let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
-    // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。
-    // 所以要设置LDO4的电压为3.3V  (3300 - 700) / 25 = 104
-    let ldo4 = Ldo::ldo4_with_voltage(104, true);
+    // 2. 创建一个总线管理器，并将I2C驱动的所有权交给它
+    let bus_manager = BusManagerSimple::new(i2c_driver);
 
-    // 根据axp173手册，LDO2,LDO3的电压由一个byte,低4位bit表示LDO3的电压，高4位表示LDO2的电压，电压范围是：1.8-3.3V， 100mV/step，每个bit表示100mV。
-    // 所以要设置LDO2,LDO3的电压为2.8V  (2800 - 1800) / 100 = 10
-    let ldo2 = Ldo::ldo2_with_voltage(10, true);
-    axp173.enable_ldo(&ldo2).unwrap();
-    axp173.enable_ldo(&ldo4).unwrap();
+    // 3. 从管理器中为每个设备创建独立的“代理”
+    //    axp_i2c_proxy 和 es_i2c_proxy 现在是两个可以独立使用的I2C设备
+    let axp173_i2c_proxy = bus_manager.acquire_i2c();
+    let es8311_i2c_proxy = bus_manager.acquire_i2c();
 
-    let power_control_value = axp173.read_u8(0x33).unwrap();
-    println!("Power controller reg: {:b}", power_control_value);
+    /* */
+    // init_wifi(peripherals, sysloop, &app_config)?;
+    {
+        // 2. 创建AXP173驱动实例
+        let mut axp173 = Axp173::new(axp173_i2c_proxy);
+        axp173.init().unwrap();
+
+        // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。
+        // 所以要设置LDO4的电压为3.3V  (3300 - 700) / 25 = 104
+        let ldo4 = Ldo::ldo4_with_voltage(104, true);
+
+        // 根据axp173手册，LDO2,LDO3的电压由一个byte,低4位bit表示LDO3的电压，高4位表示LDO2的电压，电压范围是：1.8-3.3V， 100mV/step，每个bit表示100mV。
+        // 所以要设置LDO2,LDO3的电压为2.8V  (2800 - 1800) / 100 = 10
+        let ldo2 = Ldo::ldo2_with_voltage(10, true);
+        axp173.enable_ldo(&ldo2).unwrap();
+        axp173.enable_ldo(&ldo4).unwrap();
+
+        let power_control_value = axp173.read_u8(0x33).unwrap();
+        println!("Power controller reg33: {:08b}", power_control_value);
+
+        let reg12_value = axp173.read_u8(0x12).unwrap();
+        println!("Power controller reg12: {:08b}", reg12_value);
+
+        axp173.set_exten(true).unwrap();
+    }
 
     // 初始化 LCD 屏幕
 
@@ -145,15 +162,39 @@ fn main() {
     */
 
     //初始化es8311音频解码器
-    let mut es8311 = audio::es8311::Es8311::new(&mut i2c_driver);
+    let mut es8311 = audio::es8311::Es8311::new(es8311_i2c_proxy);
+
+    // match es8311.read_u8(0xFD) {
+    //     Ok(chip_id) => {
+    //         info!("SUCCESS! Successfully read from ES8311.");
+    //         info!("Chip ID: 0x{:02X} (should be 0x83)", chip_id);
+
+    //         info!("Now attempting full init...");
+    //     }
+    //     Err(_) => {
+    //         println!("FATAL: Failed to read from ES8311 at address 0x18.");
+    //         println!("Please check: ");
+    //         println!("  1. ES8311 Power Supply (is LDO3 correct?).");
+    //         println!("  2. I2C Pin connections (GPIO1 for SDA, GPIO2 for SCL?).");
+    //         println!("  3. Physical wiring and soldering.");
+    //     }
+    // }
+
+
+
+    Delay::new_default().delay_ms(1000);
+
     let mut delay = Delay::new_default();
+
+    // es8311.init(&mut delay).unwrap();
+
     match es8311.init(&mut delay) {
         Ok(_) => {
             println!("初始化ES8311成功");
-        },
+        }
         Err(e) => {
             println!("初始化ES8311失败:{:?}", e);
-            return
+            return;
         }
     }
 

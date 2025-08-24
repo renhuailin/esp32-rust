@@ -14,15 +14,15 @@ const ADDR: u8 = 0x18;
 
 // --- ES8311 寄存器地址定义 ---
 // (这些地址来自ES8311数据手册)
-const ES8311_RESET_REG: u8 = 0x00;
+const ES8311_RESET_REG_00: u8 = 0x00;
 const ES8311_CLK_MANAGER_REG_01: u8 = 0x01;
 const ES8311_CLK_MANAGER_REG_02: u8 = 0x02;
 const ES8311_CLOCK_MANAGER_REG_04: u8 = 0x04;
 const ES8311_CLOCK_MANAGER_REG_05: u8 = 0x05;
-const ES8311_CHIP_POWER_REG: u8 = 0x06;
+const ES8311_CLOCK_MANAGER_REG_06: u8 = 0x06;
 const ES8311_GPIO_REG: u8 = 0x07;
 const ES8311_MASTER_MODE_REG: u8 = 0x08;
-const ES8311_ADC_CONTROL_REG_01: u8 = 0x09;
+const ES8311_SDPIN_REG_09: u8 = 0x09;
 const ES8311_DAC_CONTROL_REG_01: u8 = 0x12;
 const ES8311_DAC_CONTROL_REG_02: u8 = 0x13;
 const ES8311_DAC_CONTROL_REG_03: u8 = 0x14;
@@ -32,12 +32,22 @@ const ES8311_GPIO_REG_44: u8 = 0x44;
 
 const ES8311_SYSTEM_REG_10: u8 = 0x10;
 const ES8311_SYSTEM_REG_11: u8 = 0x11;
+const ES8311_SYSTEM_REG_12: u8 = 0x12;
 const ES8311_SYSTEM_REG_0B: u8 = 0x0B;
 const ES8311_SYSTEM_REG_0C: u8 = 0x0C;
+const ES8311_SYSTEM_REG_0D: u8 = 0x0D;
+const ES8311_SYSTEM_REG_0E: u8 = 0x0E;
 const ES8311_SYSTEM_REG_13: u8 = 0x13;
+const ES8311_SYSTEM_REG_14: u8 = 0x14;
+const ES8311_ADC_REG_15: u8 = 0x15;
+
+const ES8311_ADC_REG17: u8 = 0x17;
 
 const ES8311_ADC_REG_1B: u8 = 0x1B;
 const ES8311_ADC_REG_1C: u8 = 0x1C;
+
+const ES8311_DAC_REG_37: u8 = 0x37;
+const ES8311_GP_REG_45: u8 = 0x45;
 
 const ES8311_DAC_VOLUME_REG_32: u8 = 0x32;
 
@@ -72,22 +82,16 @@ where
         // }
 
         // 1. 复位芯片
-        // self.write_reg(ES8311_RESET_REG, 0x80)?; // 复位数字部分
-        self.write_reg(ES8311_GPIO_REG_44, 0x08)?;
-        println!("写入了一个ES8311寄存器");
-        delay.delay_us(50_000); // 等待50ms
-                                // self.write_reg(ES8311_RESET_REG, 0x00)?; // 恢复正常
-
         /* Enhance ES8311 I2C noise immunity */
         self.write_reg(ES8311_GPIO_REG_44, 0x08)?; // 复位数字部分
-                                                   /* Due to occasional failures during the first I2C write with the ES8311 chip, a second write is performed to ensure reliability */
+        delay.delay_us(50_000); // 等待50ms
+                                /* Due to occasional failures during the first I2C write with the ES8311 chip, a second write is performed to ensure reliability */
         self.write_reg(ES8311_GPIO_REG_44, 0x08)?; // 复位数字部分
 
         // 2. 配置时钟
         self.write_reg(ES8311_CLK_MANAGER_REG_01, 0x30)?; // MCLK和BCLK使能
         self.write_reg(ES8311_CLK_MANAGER_REG_02, 0x00)?; // I2S为主模式, 16-bit
-                                                          // self.write_reg(ES8311_MASTER_MODE_REG, 0x00)?; // I2S格式, 16-bit
-                                                          // self.write_reg(ES8311_CHIP_POWER_REG, 0x00)?; // 全部电源开启
+
         self.write_reg(ES8311_CLOCK_MANAGER_REG_04, 0x10)?; // ADC电源开启
         self.write_reg(ES8311_CLOCK_MANAGER_REG_05, 0x00)?; // DAC电源开启
 
@@ -103,10 +107,154 @@ where
         self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
         self.write_reg(ES8311_ADC_REG_1C, 0x6A)?;
 
-        self.write_reg(ES8311_RESET_REG, 0x80)?;
+        self.write_reg(ES8311_RESET_REG_00, 0x80)?;
+
+        // set es8311 to slave mode
+        self.set_master_mode(false)?;
+
+        self.configure_mclk_source(true)?;
+
+        self.set_invert_mclk(false)?;
+
+        self.set_invert_sclk(false)?;
+
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG13, 0x10);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG1B, 0x0A);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG1C, 0x6A);
+
+        self.write_reg(ES8311_SYSTEM_REG_13, 0x10)?;
+        self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
+        self.write_reg(ES8311_SYSTEM_REG_13, 0x6A)?;
+
+        // if (codec_cfg->no_dac_ref == false) {
+        //     /* set internal reference signal (ADCL + DACR) */
+        //     ESP_LOGI(TAG, "no_dac_ref == false");
+        //     ret |= es8311_write_reg(codec, ES8311_GPIO_REG44, 0x58);
+        // } else {
+        //     ESP_LOGI(TAG, "no_dac_ref == true");
+        //     ret |= es8311_write_reg(codec, ES8311_GPIO_REG44, 0x08);
+        // }
 
         // 5. 设置默认音量 (0-33, 0是最大声, 33是静音)
         self.set_voice_volume(20)?; // 设置一个适中的音量
+
+        Ok(())
+    }
+
+    pub fn enable(&mut self) -> Result<(), E> {
+        // int ret = ESP_CODEC_DEV_OK;
+        // int adc_iface = 0, dac_iface = 0;
+        // int regv = 0x80;
+        // if (codec->cfg.master_mode) {
+        //     regv |= 0x40;
+        // } else {
+        //     regv &= 0xBF;
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_RESET_REG00, regv);
+
+        self.set_master_mode(false);
+
+        // regv = 0x3F;
+        // if (codec->cfg.use_mclk) {
+        //     regv &= 0x7F;
+        // } else {
+        //     regv |= 0x80;
+        // }
+        // if (codec->cfg.invert_mclk) {
+        //     regv |= 0x40;
+        // } else {
+        //     regv &= ~(0x40);
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG01, regv);
+        self.configure_mclk_source(true)?;
+
+        self.set_invert_mclk(false)?;
+
+        self.set_invert_sclk(false)?;
+
+        // ret = es8311_read_reg(codec, ES8311_SDPIN_REG09, &dac_iface);
+        // ret |= es8311_read_reg(codec, ES8311_SDPOUT_REG0A, &adc_iface);
+        // if (ret != ESP_CODEC_DEV_OK) {
+        //     return ret;
+        // }
+        // dac_iface &= 0xBF;
+        // adc_iface &= 0xBF;
+        // adc_iface |= BITS(6);
+        // dac_iface |= BITS(6);
+        // int codec_mode = codec->cfg.codec_mode;
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_LINE) {
+        //     ESP_LOGE(TAG, "Codec not support LINE mode");
+        //     return ESP_CODEC_DEV_NOT_SUPPORT;
+        // }
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_ADC || codec_mode == ESP_CODEC_DEV_WORK_MODE_BOTH) {
+        //     adc_iface &= ~(BITS(6));
+        // }
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_DAC || codec_mode == ESP_CODEC_DEV_WORK_MODE_BOTH) {
+        //     dac_iface &= ~(BITS(6));
+        // }
+
+        // ret |= es8311_write_reg(codec, ES8311_SDPIN_REG09, dac_iface);
+        // ret |= es8311_write_reg(codec, ES8311_SDPOUT_REG0A, adc_iface);
+
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG17, 0xBF);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0E, 0x02);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG12, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, 0x1A);
+
+        // // pdm dmic enable or disable
+        // regv = 0;
+        // ret |= es8311_read_reg(codec, ES8311_SYSTEM_REG14, &regv);
+        // if (codec->cfg.digital_mic) {
+        //     regv |= 0x40;
+        // } else {
+        //     regv &= ~(0x40);
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, regv);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0D, 0x01);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG15, 0x40);
+        // ret |= es8311_write_reg(codec, ES8311_DAC_REG37, 0x08);
+        // ret |= es8311_write_reg(codec, ES8311_GP_REG45, 0x00);
+        // return ret;
+
+        // 在小智的main/audio_codecs/box_audio_codec.cc，我们可以查到，codec的工作模式为： ESP_CODEC_DEV_WORK_MODE_DAC，所以我们只需要配置DAC部分。也就是reg 0x09
+        //下面的三行代码，就是将reg 0x09 &= ~(0x06)，清除了第1位和第2位。不明白这有什么意义。
+        let mut regv = self.read_u8(ES8311_SDPIN_REG_09)?;
+        regv &= !(0x06);
+        println!("es8311 SDP IN REG: {}=0x{:X}={:08b}", regv, regv, regv);
+        self.write_reg(ES8311_RESET_REG_00, regv)?;
+
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG17, 0xBF);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0E, 0x02);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG12, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, 0x1A);
+        self.write_reg(ES8311_ADC_REG17, 0xBF)?;
+        self.write_reg(ES8311_SYSTEM_REG_0E, 0x02)?;
+        self.write_reg(ES8311_SYSTEM_REG_12, 0x00)?;
+        self.write_reg(ES8311_SYSTEM_REG_14, 0x1A)?;
+
+        // // pdm dmic enable or disable
+        // regv = 0;
+        // ret |= es8311_read_reg(codec, ES8311_SYSTEM_REG14, &regv);
+        // if (codec->cfg.digital_mic) {
+        //     regv |= 0x40;
+        // } else {
+        //     regv &= ~(0x40);
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, regv);
+
+        let mut regv = self.read_u8(ES8311_SYSTEM_REG_14)?; //这个值不是刚赋的吗？
+        regv &= !(0x40);
+        self.write_reg(ES8311_SYSTEM_REG_14, regv)?;
+
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0D, 0x01);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG15, 0x40);
+        // ret |= es8311_write_reg(codec, ES8311_DAC_REG37, 0x08);
+        // ret |= es8311_write_reg(codec, ES8311_GP_REG45, 0x00);
+
+        self.write_reg(ES8311_SYSTEM_REG_0D, 0x01)?;
+        self.write_reg(ES8311_ADC_REG_15, 0x40)?;
+        self.write_reg(ES8311_DAC_REG_37, 0x08)?;
+        self.write_reg(ES8311_GP_REG_45, 0x00)?;
 
         Ok(())
     }
@@ -144,8 +292,83 @@ where
         }
     }
 
+    //private methods
     /// 向一个寄存器写入一个字节
     fn write_reg(&mut self, reg: u8, value: u8) -> Result<(), E> {
         self.i2c.write(ADDR, &[reg, value])
+    }
+
+    /// 设置工作模式为master
+    /// 参数：
+    /// master_mode: true为master模式，false为slave模式
+    fn set_master_mode(&mut self, master_mode: bool) -> Result<(), E> {
+        // ret = es8311_read_reg(codec, ES8311_RESET_REG00, &regv);
+        // if (codec_cfg->master_mode) {
+        //     ESP_LOGI(TAG, "Work in Master mode");
+        //     regv |= 0x40;
+        // } else {
+        //     ESP_LOGI(TAG, "Work in Slave mode");
+        //     regv &= 0xBF;
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_RESET_REG00, regv);
+
+        let mut regv = self.read_u8(ES8311_RESET_REG_00)?;
+        if master_mode {
+            println!("es8311 Work in Master mode");
+            regv |= 0x40;
+        } else {
+            println!("es8311 Work in Slave mode");
+            regv &= 0xBF;
+        }
+        self.write_reg(ES8311_RESET_REG_00, regv)?;
+        Ok(())
+    }
+
+    fn set_invert_mclk(&mut self, invert: bool) -> Result<(), E> {
+        let mut regv = self.read_u8(ES8311_CLK_MANAGER_REG_01)?;
+        if invert {
+            regv |= 0x40;
+        } else {
+            regv &= !(0x40);
+        }
+
+        self.write_reg(ES8311_CLK_MANAGER_REG_01, regv)?;
+        Ok(())
+    }
+
+    fn set_invert_sclk(&mut self, invert: bool) -> Result<(), E> {
+        // SCLK inverted or not
+        // ret |= es8311_read_reg(codec, ES8311_CLK_MANAGER_REG06, &regv);
+        // if (codec_cfg->invert_sclk) {
+        //     ESP_LOGI(TAG, "invert sclk");
+        //     regv |= 0x20;
+        // } else {
+        //     ESP_LOGI(TAG, "not invert sclk");
+        //     regv &= ~(0x20);
+        // }
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG06, regv);
+
+        let mut regv = self.read_u8(ES8311_CLOCK_MANAGER_REG_06)?;
+        if invert {
+            println!("es8311 invert sclk");
+            regv |= 0x20;
+        } else {
+            println!("es8311 not invert sclk");
+            regv &= !(0x20);
+        }
+
+        self.write_reg(ES8311_CLOCK_MANAGER_REG_06, regv)?;
+        Ok(())
+    }
+
+    fn configure_mclk_source(&mut self, use_mclk: bool) -> Result<(), E> {
+        let mut regv = 0x3F;
+        if use_mclk {
+            regv &= 0x7F;
+        } else {
+            regv |= 0x80;
+        }
+        self.write_reg(ES8311_CLK_MANAGER_REG_01, regv)?;
+        Ok(())
     }
 }

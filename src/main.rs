@@ -3,7 +3,7 @@ use esp_idf_hal::{
     gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
     i2c::{I2cConfig, I2cDriver},
     i2s::{
-        config::{DataBitWidth, StdConfig},
+        config::{Config, DataBitWidth, Role, StdConfig},
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
@@ -180,8 +180,6 @@ fn main() {
     //     }
     // }
 
-
-
     Delay::new_default().delay_ms(1000);
 
     let mut delay = Delay::new_default();
@@ -198,24 +196,45 @@ fn main() {
         }
     }
 
+    
     // 初始化I2S
     let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
-    let peripherals = Peripherals::take().unwrap();
-    let bclk = peripherals.pins.gpio42;
-    let din = peripherals.pins.gpio45;
-    let dout = peripherals.pins.gpio39;
-    let mclk = peripherals.pins.gpio41.into();
-    let ws = peripherals.pins.gpio40;
-    let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
-        peripherals.i2s0,
-        &std_config,
-        bclk,
-        din,
-        dout,
-        mclk,
-        ws,
-    )
-    .unwrap();
+    // let peripherals = Peripherals::take().unwrap();
+    let bclk = pins.gpio42;
+    let din = pins.gpio45;
+    let dout = pins.gpio39;
+    let mclk = pins.gpio41.into();
+    let ws = pins.gpio40;
+
+    
+
+    // i2s_config
+
+    // let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+    //     peripherals.i2s0,
+    //     &std_config,
+    //     bclk,
+    //     din,
+    //     dout,
+    //     mclk,
+    //     ws,
+    // )
+    // .unwrap();
+
+    let mut i2s_driver =
+        I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
+
+    println!("初始化I2S完成！");
+
+    match es8311.enable() {
+        Ok(_) => {
+            println!("成功启动音频解码器");
+        }
+        Err(e) => {
+            println!("启动音频解码器失败:{:?}", e);
+            return;
+        }
+    }
 
     const PCM_DATA: &'static [u8] = include_bytes!("../assets/sound.pcm");
 

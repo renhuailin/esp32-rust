@@ -196,9 +196,8 @@ fn main() {
         }
     }
 
-    
     // 初始化I2S
-    let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
+    let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
     // let peripherals = Peripherals::take().unwrap();
     let bclk = pins.gpio42;
     let din = pins.gpio45;
@@ -206,10 +205,7 @@ fn main() {
     let mclk = pins.gpio41.into();
     let ws = pins.gpio40;
 
-    
-
     // i2s_config
-
     // let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
     //     peripherals.i2s0,
     //     &std_config,
@@ -223,6 +219,10 @@ fn main() {
 
     let mut i2s_driver =
         I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
+
+    i2s_driver.tx_enable().unwrap();
+    // let mut i2s_driver =
+    //     I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
 
     println!("初始化I2S完成！");
 
@@ -242,16 +242,37 @@ fn main() {
         "Embedded PCM data size: {} bytes. Starting playback...",
         PCM_DATA.len()
     );
-    match i2s_driver.write_all(PCM_DATA, BLOCK) {
-        Ok(_) => info!("Playback finished successfully!"),
-        Err(e) => println!("I2S write error: {:?}", e),
+    // match i2s_driver.write_all(PCM_DATA, BLOCK) {
+    //     Ok(_) => info!("Playback finished successfully!"),
+    //     Err(e) => println!("I2S write error: {:?}", e),
+    // }
+
+    const CHUNK_SIZE: usize = 4096;
+
+    info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
+
+    // // 3. 使用 .chunks() 方法将整个PCM数据切分成多个小块
+    for chunk in PCM_DATA.chunks(CHUNK_SIZE) {
+        // 4. 逐块写入I2S驱动
+        //    i2s_driver.write() 会阻塞，直到这一小块数据被成功写入DMA
+        match i2s_driver.write(chunk, BLOCK) {
+            Ok(bytes_written) => {
+                // 打印一些进度信息，方便调试
+                info!("Successfully wrote {} bytes to I2S.", bytes_written);
+            }
+            Err(e) => {
+                // 如果在写入过程中出错，打印错误并跳出循环
+                info!("I2S write error on a chunk: {:?}", e);
+                break;
+            }
+        }
     }
 
     info!("Test complete. Entering infinite loop.");
 
-    loop {
-        FreeRtos::delay_ms(1000);
-    }
+    // loop {
+    //     FreeRtos::delay_ms(1000);
+    // }
 }
 
 fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {

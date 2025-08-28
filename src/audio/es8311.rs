@@ -17,36 +17,35 @@ const ADDR: u8 = 0x18;
 const ES8311_RESET_REG_00: u8 = 0x00;
 const ES8311_CLK_MANAGER_REG_01: u8 = 0x01;
 const ES8311_CLK_MANAGER_REG_02: u8 = 0x02;
+const ES8311_CLK_MANAGER_REG_03: u8 = 0x03;
 const ES8311_CLOCK_MANAGER_REG_04: u8 = 0x04;
 const ES8311_CLOCK_MANAGER_REG_05: u8 = 0x05;
 const ES8311_CLOCK_MANAGER_REG_06: u8 = 0x06;
 const ES8311_GPIO_REG: u8 = 0x07;
 const ES8311_MASTER_MODE_REG: u8 = 0x08;
-const ES8311_SDPIN_REG_09: u8 = 0x09;
-const ES8311_DAC_CONTROL_REG_01: u8 = 0x12;
-const ES8311_DAC_CONTROL_REG_02: u8 = 0x13;
-const ES8311_DAC_CONTROL_REG_03: u8 = 0x14;
-const ES8311_DAC_L_VOLUME_REG: u8 = 0x1B;
-const ES8311_DAC_R_VOLUME_REG: u8 = 0x1C;
-const ES8311_GPIO_REG_44: u8 = 0x44;
 
-const ES8311_SYSTEM_REG_10: u8 = 0x10;
-const ES8311_SYSTEM_REG_11: u8 = 0x11;
-const ES8311_SYSTEM_REG_12: u8 = 0x12;
+const ES8311_SDPIN_REG_09: u8 = 0x09;
+const ES8311_SDPOUT_REG_0A: u8 = 0x0A;
 const ES8311_SYSTEM_REG_0B: u8 = 0x0B;
 const ES8311_SYSTEM_REG_0C: u8 = 0x0C;
 const ES8311_SYSTEM_REG_0D: u8 = 0x0D;
 const ES8311_SYSTEM_REG_0E: u8 = 0x0E;
+
+const ES8311_SYSTEM_REG_10: u8 = 0x10;
+const ES8311_SYSTEM_REG_11: u8 = 0x11;
+const ES8311_SYSTEM_REG_12: u8 = 0x12;
 const ES8311_SYSTEM_REG_13: u8 = 0x13;
 const ES8311_SYSTEM_REG_14: u8 = 0x14;
 const ES8311_ADC_REG_15: u8 = 0x15;
-
-const ES8311_ADC_REG17: u8 = 0x17;
+const ES8311_ADC_REG_16: u8 = 0x16;
 
 const ES8311_ADC_REG_1B: u8 = 0x1B;
 const ES8311_ADC_REG_1C: u8 = 0x1C;
 
+const ES8311_ADC_REG17: u8 = 0x17;
+
 const ES8311_DAC_REG_37: u8 = 0x37;
+const ES8311_GPIO_REG_44: u8 = 0x44;
 const ES8311_GP_REG_45: u8 = 0x45;
 
 const ES8311_DAC_VOLUME_REG_32: u8 = 0x32;
@@ -91,21 +90,18 @@ where
         // 2. 配置时钟
         self.write_reg(ES8311_CLK_MANAGER_REG_01, 0x30)?; // MCLK和BCLK使能
         self.write_reg(ES8311_CLK_MANAGER_REG_02, 0x00)?; // I2S为主模式, 16-bit
+        self.write_reg(ES8311_CLK_MANAGER_REG_03, 0x10)?;
+        self.write_reg(ES8311_ADC_REG_16, 0x24)?;
 
         self.write_reg(ES8311_CLOCK_MANAGER_REG_04, 0x10)?; // ADC电源开启
         self.write_reg(ES8311_CLOCK_MANAGER_REG_05, 0x00)?; // DAC电源开启
 
         //3. 配置电源
-
-        self.write_reg(ES8311_SYSTEM_REG_10, 0x1F)?; //这是默认值
-        self.write_reg(ES8311_SYSTEM_REG_11, 0x7F)?; //根据手册，这个reg的6:0是内部使用的，不知道小智为啥配置成0x7F
-
         self.write_reg(ES8311_SYSTEM_REG_0B, 0x00)?; //这是默认值
         self.write_reg(ES8311_SYSTEM_REG_0C, 0x00)?; //这是根据小智代码来设置的，这个不是默认值
 
-        self.write_reg(ES8311_SYSTEM_REG_13, 0x10)?; //enable output to HP driver
-        self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
-        self.write_reg(ES8311_ADC_REG_1C, 0x6A)?;
+        self.write_reg(ES8311_SYSTEM_REG_10, 0x1F)?; //这是默认值
+        self.write_reg(ES8311_SYSTEM_REG_11, 0x7F)?; //根据手册，这个reg的6:0是内部使用的，不知道小智为啥配置成0x7F
 
         self.write_reg(ES8311_RESET_REG_00, 0x80)?;
 
@@ -122,9 +118,9 @@ where
         // ret |= es8311_write_reg(codec, ES8311_ADC_REG1B, 0x0A);
         // ret |= es8311_write_reg(codec, ES8311_ADC_REG1C, 0x6A);
 
-        self.write_reg(ES8311_SYSTEM_REG_13, 0x10)?;
+        self.write_reg(ES8311_SYSTEM_REG_13, 0x10)?; //enable output to HP driver
         self.write_reg(ES8311_ADC_REG_1B, 0x0A)?;
-        self.write_reg(ES8311_SYSTEM_REG_13, 0x6A)?;
+        self.write_reg(ES8311_ADC_REG_1C, 0x6A)?;
 
         // if (codec_cfg->no_dac_ref == false) {
         //     /* set internal reference signal (ADCL + DACR) */
@@ -134,9 +130,10 @@ where
         //     ESP_LOGI(TAG, "no_dac_ref == true");
         //     ret |= es8311_write_reg(codec, ES8311_GPIO_REG44, 0x08);
         // }
+        self.write_reg(ES8311_GPIO_REG_44, 0x58)?;
 
         // 5. 设置默认音量 (0-33, 0是最大声, 33是静音)
-        self.set_voice_volume(20)?; // 设置一个适中的音量
+        self.set_voice_volume(50)?; // 设置一个适中的音量
 
         Ok(())
     }
@@ -216,17 +213,62 @@ where
         // ret |= es8311_write_reg(codec, ES8311_GP_REG45, 0x00);
         // return ret;
 
-        // 在小智的main/audio_codecs/box_audio_codec.cc，我们可以查到，codec的工作模式为： ESP_CODEC_DEV_WORK_MODE_DAC，所以我们只需要配置DAC部分。也就是reg 0x09
-        //下面的三行代码，就是将reg 0x09 &= ~(0x06)，清除了第1位和第2位。不明白这有什么意义。
-        let mut regv = self.read_u8(ES8311_SDPIN_REG_09)?;
-        regv &= !(0x06);
-        println!("es8311 SDP IN REG: {}=0x{:X}={:08b}", regv, regv, regv);
-        self.write_reg(ES8311_RESET_REG_00, regv)?;
+        // 在小智的main/audio_codecs/box_audio_codec.cc，我们可以查到，codec的工作模式为： ESP_CODEC_DEV_WORK_MODE_DAC
+        // ret = es8311_read_reg(codec, ES8311_SDPIN_REG09, &dac_iface);
+        // ret |= es8311_read_reg(codec, ES8311_SDPOUT_REG0A, &adc_iface);
+        // if (ret != ESP_CODEC_DEV_OK) {
+        //     return ret;
+        // }
+        // dac_iface &= 0xBF;
+        // adc_iface &= 0xBF;
+        // adc_iface |= BITS(6);
+        // dac_iface |= BITS(6);
+        // int codec_mode = codec->cfg.codec_mode;
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_LINE) {
+        //     ESP_LOGE(TAG, "Codec not support LINE mode");
+        //     return ESP_CODEC_DEV_NOT_SUPPORT;
+        // }
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_ADC || codec_mode == ESP_CODEC_DEV_WORK_MODE_BOTH) {
+        //     adc_iface &= ~(BITS(6));
+        // }
+        // if (codec_mode == ESP_CODEC_DEV_WORK_MODE_DAC || codec_mode == ESP_CODEC_DEV_WORK_MODE_BOTH) {
+        //     dac_iface &= ~(BITS(6));
+        // }
+
+        // ret |= es8311_write_reg(codec, ES8311_SDPIN_REG09, dac_iface);
+        // ret |= es8311_write_reg(codec, ES8311_SDPOUT_REG0A, adc_iface);
+
+        let mut dac_iface = self.read_u8(ES8311_SDPIN_REG_09)?;
+        let mut adc_iface = self.read_u8(ES8311_SDPOUT_REG_0A)?;
+
+        dac_iface &= 0xBF; // 0xBF=10111111,把第6位清零。0x09寄存器的第6位是SDP in mute
+                           // 0 – unmute (default)
+                           // 1 – mute
+                           //所以这一步是unmute,也就是取消静音。
+
+        adc_iface &= 0xBF; // 0xBF=10111111,把第6位清零。0x0A寄存器的第6位是SDP out mute
+                           // 0 – unmute (default)
+                           // 1 – mute,也取消静音。
+
+        // reg09v &= !(0x06);
+
+        adc_iface |= 0x06; // 0x06=00000110,把第1位和第2位置1。 我看了手册，真不明白这是什么意思，因为1:0 和 4:2 是分开组表示一组意思的。下面的0x0A也是。
+        dac_iface |= 0x06; // 0x06=00000110,把第1位和第2位置1。
+
+        dac_iface &= !(0x06); // 0x06=00000110,把第1位和第2位置0。 如果是ESP_CODEC_DEV_WORK_MODE_DAC，要执行这个。
+        dac_iface = 0x0C;
+        println!(
+            "es8311 SDP IN REG 09: {}=0x{:X}={:08b}",
+            dac_iface, dac_iface, dac_iface
+        );
+        self.write_reg(ES8311_SDPIN_REG_09, dac_iface)?;
+        self.write_reg(ES8311_SDPOUT_REG_0A, adc_iface)?;
 
         // ret |= es8311_write_reg(codec, ES8311_ADC_REG17, 0xBF);
         // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0E, 0x02);
         // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG12, 0x00);
         // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, 0x1A);
+
         self.write_reg(ES8311_ADC_REG17, 0xBF)?;
         self.write_reg(ES8311_SYSTEM_REG_0E, 0x02)?;
         self.write_reg(ES8311_SYSTEM_REG_12, 0x00)?;
@@ -319,6 +361,7 @@ where
         } else {
             println!("es8311 Work in Slave mode");
             regv &= 0xBF;
+            println!("es8311 SCLK: {}=0x{:X}={:08b}", regv, regv, regv);
         }
         self.write_reg(ES8311_RESET_REG_00, regv)?;
         Ok(())

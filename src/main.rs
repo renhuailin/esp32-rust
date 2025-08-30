@@ -1,3 +1,10 @@
+use std::num::NonZero;
+use std::{thread, time::Duration};
+
+use esp_idf_hal::delay;
+use esp_idf_hal::gpio::{InterruptType, Pull};
+use esp_idf_hal::task::notification::Notification;
+use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_hal::{
     delay::{Delay, FreeRtos, BLOCK},
     gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
@@ -10,19 +17,20 @@ use esp_idf_hal::{
     prelude::*,
     rmt::RmtChannel,
     spi::SpiDriver,
+    task::block_on,
 };
-
-use esp_idf_hal::delay;
-use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::prelude::*;
+use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
 use esp_idf_test2::{
     audio,
     axp173::{Axp173, Ldo},
+    common::button::{self, Button},
     lcd,
     led::WS2812RMT,
     wifi::wifi,
 };
+use futures::{select, FutureExt};
 use log::info;
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
@@ -100,7 +108,7 @@ fn main() {
 
     // 3. 设置亮度 (通过设置占空比)
     let max_duty = channel.get_max_duty();
-    // channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
+    channel.set_duty(0).unwrap(); // 设置为100%的亮度
 
     // 初始化 ST7789 屏幕
 
@@ -131,7 +139,7 @@ fn main() {
 
     lcd::LcdSt7789::init(driver, dc.into(), cs.into());
 
-    // channel.set_duty(0).unwrap(); // 设置为50%的亮度
+    //关闭背光
 
     // // show led demo
     // let led = pins.gpio38;
@@ -205,20 +213,19 @@ fn main() {
     let mclk = pins.gpio41.into();
     let ws = pins.gpio40;
 
-    // i2s_config
-    // let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
-    //     peripherals.i2s0,
-    //     &std_config,
-    //     bclk,
-    //     din,
-    //     dout,
-    //     mclk,
-    //     ws,
-    // )
-    // .unwrap();
+    let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+        peripherals.i2s0,
+        &std_config,
+        bclk,
+        din,
+        dout,
+        mclk,
+        ws,
+    )
+    .unwrap();
 
-    let mut i2s_driver =
-        I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
+    // let mut i2s_driver =
+    //     I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
 
     i2s_driver.tx_enable().unwrap();
     // let mut i2s_driver =
@@ -236,6 +243,132 @@ fn main() {
         }
     }
 
+    // play_audio(i2s_driver);
+
+    //  定时熄屏
+    let once_timer = EspTaskTimerService::new()
+        .unwrap()
+        .timer(move || {
+            channel.set_duty(max_duty).unwrap(); //关闭背光
+            info!("One-shot timer triggered");
+        })
+        .unwrap();
+
+    once_timer.after(Duration::from_secs(2)).unwrap();
+
+    thread::sleep(Duration::from_secs(3));
+
+    info!("Test complete. Entering infinite loop.");
+
+    let touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
+    let volume_button = button::Button::new(pins.gpio47).unwrap();
+
+    // let mut button = PinDriver::input(pins.gpio47).unwrap();
+
+    // button.set_pull(Pull::Down).unwrap();
+    // button.set_interrupt_type(InterruptType::PosEdge).unwrap();
+
+    // loop {
+    //     // prepare communication channel
+    //     let notification = Notification::new();
+    //     let waker = notification.notifier();
+
+    //     // register interrupt callback, here it's a closure on stack
+    //     unsafe {
+    //         button
+    //             .subscribe_nonstatic(move || {
+    //                 waker.notify(NonZero::new(1).unwrap());
+    //             })
+    //             .unwrap();
+    //     }
+
+    //     // enable interrupt, will be automatically disabled after being triggered
+    //     button.enable_interrupt().unwrap();
+    //     // block until notified
+    //     notification.wait_any();
+
+    //     // toggle the LED
+    //     println!("Button pressed!");
+
+    //     // debounce
+    //     FreeRtos::delay_ms(200);
+    // }
+
+    // let config = ThreadSpawnConfiguration {
+    //     name: Some(b"button_listener\0"), // 任务名，方便调试 (必须以null结尾)
+    //     stack_size: 3072,                 // 分配3KB的栈空间，对于这个任务足够了
+    //     priority: 5,                      // 设置一个中等的优先级
+    //     pin_to_core: Some(esp_idf_hal::cpu::Core::Core1), // 将任务固定在Core 1上运行，让Core 0处理主逻辑和网络
+    //     ..Default::default()
+    // };
+
+    // // 2. 设置配置，并使用Thread::spawn来创建任务
+    // config.set().unwrap();
+    // let handler = thread::spawn(move || {
+    //     // 这段代码现在运行在一个经过精确配置的后台任务中
+    //     block_on(async move {
+    //         println!(
+    //             "[Button Task] Initialized on Core {:?}. Waiting for press...",
+    //             esp_idf_hal::cpu::core()
+    //         );
+    //         loop {
+    //             select! {
+    //                 _ = touch_button.wait().fuse()  => {
+    //                     println!("[Button Task] Touch button pressed!");
+    //                 },
+    //                 _ = volume_button.wait().fuse() => {
+    //                     println!("[Button Task] Volume button pressed!");
+    //                 },
+    //             }
+    //         }
+    //     });
+    // });
+
+    // let result = handler.join().unwrap();
+
+    // println!("{}", result);
+    // block_on(async move {
+    //     // println!("Buttons initialized. Waiting for press...");
+    //     loop {
+    //         select! {
+    //             _ = touch_button.wait().fuse()  => {
+    //                 println!("touch_button 1 pressed!");
+    //             },
+    //             _ = volume_button.wait().fuse() => {
+    //                 println!("volume_button 2 pressed!");
+    //             },
+    //         }
+    //     }
+    // });
+    // init_buttons(touch_button, volume_button);
+
+    info!("Waiting for button press...");
+
+    loop {
+        // FreeRtos::delay_ms(1000);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+fn init_buttons(touch_button: Button<'_>, volume_button: Button<'_>) {
+    // let touch_button = button::Button::new(touch_button_pin).unwrap();
+    // let volume_button = button::Button::new(volume_button_pin).unwrap();
+    block_on(async move {
+        // println!("Buttons initialized. Waiting for press...");
+        loop {
+            select! {
+                _ = touch_button.wait().fuse()  => {
+                    println!("touch_button 1 pressed!");
+                },
+                _ = volume_button.wait().fuse() => {
+                    println!("volume_button 2 pressed!");
+                },
+            }
+        }
+    });
+}
+
+fn play_audio(mut i2s_driver: I2sDriver<'_, I2sBiDir>) {
     const PCM_DATA: &'static [u8] = include_bytes!("../assets/sound.pcm");
 
     info!(
@@ -267,12 +400,6 @@ fn main() {
             }
         }
     }
-
-    info!("Test complete. Entering infinite loop.");
-
-    // loop {
-    //     FreeRtos::delay_ms(1000);
-    // }
 }
 
 fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {

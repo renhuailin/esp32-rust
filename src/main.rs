@@ -1,8 +1,9 @@
-use std::num::NonZero;
+use std::num::{NonZero, NonZeroU32};
+use std::sync::Arc;
 use std::{thread, time::Duration};
 
 use esp_idf_hal::delay;
-use esp_idf_hal::gpio::{InterruptType, Pull};
+use esp_idf_hal::gpio::{Input, InterruptType, Pull};
 use esp_idf_hal::task::notification::Notification;
 use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_hal::{
@@ -34,6 +35,18 @@ use futures::{select, FutureExt};
 use log::info;
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
+
+// 定义一个统一的事件枚举
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppEvent {
+    ButtonPressed(u8), // u8可以代表按钮的GPIO号
+                       // 未来可以添加其他事件，比如：
+                       // NetworkPacketReceived,
+                       // TimerElapsed,
+}
+
+/// 这是一个只负责设置中断的函数
+/// 它接收一个Sender，当中断发生时，它会通过这个Sender发送消息
 
 fn main() {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -260,71 +273,19 @@ fn main() {
 
     info!("Test complete. Entering infinite loop.");
 
-    let touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
-    let volume_button = button::Button::new(pins.gpio47).unwrap();
+    // let touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
+    // let volume_button = button::Button::new(pins.gpio47).unwrap();
 
-    // let mut button = PinDriver::input(pins.gpio47).unwrap();
+    // 2. 启动一个专门的“中断监听线程”
+    //    我们将引脚的所有权和Sender的克隆版本移动到这个线程
+    // let touch_pin = pins.gpio0;
+    // let volume_pin = pins.gpio47;
+    // let sender_clone = sender.clone();
 
-    // button.set_pull(Pull::Down).unwrap();
-    // button.set_interrupt_type(InterruptType::PosEdge).unwrap();
-
-    // loop {
-    //     // prepare communication channel
-    //     let notification = Notification::new();
-    //     let waker = notification.notifier();
-
-    //     // register interrupt callback, here it's a closure on stack
-    //     unsafe {
-    //         button
-    //             .subscribe_nonstatic(move || {
-    //                 waker.notify(NonZero::new(1).unwrap());
-    //             })
-    //             .unwrap();
-    //     }
-
-    //     // enable interrupt, will be automatically disabled after being triggered
-    //     button.enable_interrupt().unwrap();
-    //     // block until notified
-    //     notification.wait_any();
-
-    //     // toggle the LED
-    //     println!("Button pressed!");
-
-    //     // debounce
-    //     FreeRtos::delay_ms(200);
-    // }
-
-    // let config = ThreadSpawnConfiguration {
-    //     name: Some(b"button_listener\0"), // 任务名，方便调试 (必须以null结尾)
-    //     stack_size: 3072,                 // 分配3KB的栈空间，对于这个任务足够了
-    //     priority: 5,                      // 设置一个中等的优先级
-    //     pin_to_core: Some(esp_idf_hal::cpu::Core::Core1), // 将任务固定在Core 1上运行，让Core 0处理主逻辑和网络
-    //     ..Default::default()
-    // };
-
-    // // 2. 设置配置，并使用Thread::spawn来创建任务
-    // config.set().unwrap();
-    // let handler = thread::spawn(move || {
-    //     // 这段代码现在运行在一个经过精确配置的后台任务中
-    //     block_on(async move {
-    //         println!(
-    //             "[Button Task] Initialized on Core {:?}. Waiting for press...",
-    //             esp_idf_hal::cpu::core()
-    //         );
-    //         loop {
-    //             select! {
-    //                 _ = touch_button.wait().fuse()  => {
-    //                     println!("[Button Task] Touch button pressed!");
-    //                 },
-    //                 _ = volume_button.wait().fuse() => {
-    //                     println!("[Button Task] Volume button pressed!");
-    //                 },
-    //             }
-    //         }
-    //     });
-    // });
-
-    // let result = handler.join().unwrap();
+    // 4. (重要) PinDriver的所有权必须被维持
+    //    我们将它们放入一个Box中并leak，以确保它们永久存在
+    // Box::leak(Box::new(button1_pin));
+    // Box::leak(Box::new(button2_pin));
 
     // println!("{}", result);
     // block_on(async move {
@@ -342,12 +303,29 @@ fn main() {
     // });
     // init_buttons(touch_button, volume_button);
 
-    info!("Waiting for button press...");
+    let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
+    let volume_button = button::Button::new(pins.gpio47).unwrap();
 
-    loop {
-        // FreeRtos::delay_ms(1000);
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    info!("Waiting for button press...");
+    block_on(async move {
+        // println!("Buttons initialized. Waiting for press...");
+        loop {
+            select! {
+                _ = touch_button.wait().fuse()  => {
+                    println!("touch_button 1 pressed!");
+                    touch_button.enable_interrupt().unwrap();
+                },
+                _ = volume_button.wait().fuse() => {
+                    println!("volume_button 2 pressed!");
+                },
+            }
+        }
+    });
+
+    // loop {
+    //     // FreeRtos::delay_ms(1000);
+    //     std::thread::sleep(std::time::Duration::from_secs(1));
+    // }
 }
 
 fn init_buttons(touch_button: Button<'_>, volume_button: Button<'_>) {

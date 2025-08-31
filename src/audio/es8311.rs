@@ -256,7 +256,7 @@ where
         dac_iface |= 0x06; // 0x06=00000110,把第1位和第2位置1。
 
         dac_iface &= !(0x06); // 0x06=00000110,把第1位和第2位置0。 如果是ESP_CODEC_DEV_WORK_MODE_DAC，要执行这个。
-        dac_iface = 0x0C;
+        dac_iface = 0x0C; // 0x0C=00001100,把第3位和第4位置1,16khz
         println!(
             "es8311 SDP IN REG 09: {}=0x{:X}={:08b}",
             dac_iface, dac_iface, dac_iface

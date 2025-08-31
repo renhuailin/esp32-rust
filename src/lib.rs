@@ -1,5 +1,6 @@
-pub mod lcd;
-pub mod wifi;
-pub mod led;
-pub mod axp173;
 pub mod audio;
+pub mod axp173;
+pub mod common;
+pub mod lcd;
+pub mod led;
+pub mod wifi;

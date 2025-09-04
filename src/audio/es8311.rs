@@ -1,7 +1,4 @@
 // src/es8311.rs
-
-use std::sync::Arc;
-
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
 

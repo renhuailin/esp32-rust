@@ -1,11 +1,7 @@
-use std::num::{NonZero, NonZeroU32};
-use std::sync::Arc;
 use std::{thread, time::Duration};
 
+use anyhow::{anyhow, Result};
 use esp_idf_hal::delay;
-use esp_idf_hal::gpio::{Input, InterruptType, Pull};
-use esp_idf_hal::task::notification::Notification;
-use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_hal::{
     delay::{Delay, FreeRtos, BLOCK},
     gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
@@ -18,7 +14,6 @@ use esp_idf_hal::{
     prelude::*,
     rmt::RmtChannel,
     spi::SpiDriver,
-    task::block_on,
 };
 use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
@@ -26,29 +21,15 @@ use esp_idf_sys::EspError;
 use esp_idf_test2::{
     audio,
     axp173::{Axp173, Ldo},
-    common::button::{self, Button},
     lcd,
     led::WS2812RMT,
     wifi::wifi,
 };
-use futures::{select, FutureExt};
 use log::info;
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
 
-// 定义一个统一的事件枚举
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppEvent {
-    ButtonPressed(u8), // u8可以代表按钮的GPIO号
-                       // 未来可以添加其他事件，比如：
-                       // NetworkPacketReceived,
-                       // TimerElapsed,
-}
-
-/// 这是一个只负责设置中断的函数
-/// 它接收一个Sender，当中断发生时，它会通过这个Sender发送消息
-
-fn main() {
+fn main() -> Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -121,7 +102,7 @@ fn main() {
 
     // 3. 设置亮度 (通过设置占空比)
     let max_duty = channel.get_max_duty();
-    channel.set_duty(0).unwrap(); // 设置为100%的亮度
+    channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
 
     // 初始化 ST7789 屏幕
 
@@ -213,7 +194,7 @@ fn main() {
         }
         Err(e) => {
             println!("初始化ES8311失败:{:?}", e);
-            return;
+            return Err(anyhow!("初始化ES8311失败:{:?}", e));
         }
     }
 
@@ -252,7 +233,7 @@ fn main() {
         }
         Err(e) => {
             println!("启动音频解码器失败:{:?}", e);
-            return;
+            return Err(anyhow!("启动音频解码器失败:{:?}", e));
         }
     }
 
@@ -262,7 +243,7 @@ fn main() {
     let once_timer = EspTaskTimerService::new()
         .unwrap()
         .timer(move || {
-            channel.set_duty(max_duty).unwrap(); //关闭背光
+            channel.set_duty(0).unwrap(); // 设置为50%的亮度
             info!("One-shot timer triggered");
         })
         .unwrap();
@@ -273,77 +254,10 @@ fn main() {
 
     info!("Test complete. Entering infinite loop.");
 
-    // let touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
-    // let volume_button = button::Button::new(pins.gpio47).unwrap();
-
-    // 2. 启动一个专门的“中断监听线程”
-    //    我们将引脚的所有权和Sender的克隆版本移动到这个线程
-    // let touch_pin = pins.gpio0;
-    // let volume_pin = pins.gpio47;
-    // let sender_clone = sender.clone();
-
-    // 4. (重要) PinDriver的所有权必须被维持
-    //    我们将它们放入一个Box中并leak，以确保它们永久存在
-    // Box::leak(Box::new(button1_pin));
-    // Box::leak(Box::new(button2_pin));
-
-    // println!("{}", result);
-    // block_on(async move {
-    //     // println!("Buttons initialized. Waiting for press...");
-    //     loop {
-    //         select! {
-    //             _ = touch_button.wait().fuse()  => {
-    //                 println!("touch_button 1 pressed!");
-    //             },
-    //             _ = volume_button.wait().fuse() => {
-    //                 println!("volume_button 2 pressed!");
-    //             },
-    //         }
-    //     }
-    // });
-    // init_buttons(touch_button, volume_button);
-
-    let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
-    let volume_button = button::Button::new(pins.gpio47).unwrap();
-
-    info!("Waiting for button press...");
-    block_on(async move {
-        // println!("Buttons initialized. Waiting for press...");
-        loop {
-            select! {
-                _ = touch_button.wait().fuse()  => {
-                    println!("touch_button 1 pressed!");
-                    touch_button.enable_interrupt().unwrap();
-                },
-                _ = volume_button.wait().fuse() => {
-                    println!("volume_button 2 pressed!");
-                },
-            }
-        }
-    });
-
     // loop {
-    //     // FreeRtos::delay_ms(1000);
-    //     std::thread::sleep(std::time::Duration::from_secs(1));
+    //     FreeRtos::delay_ms(1000);
     // }
-}
-
-fn init_buttons(touch_button: Button<'_>, volume_button: Button<'_>) {
-    // let touch_button = button::Button::new(touch_button_pin).unwrap();
-    // let volume_button = button::Button::new(volume_button_pin).unwrap();
-    block_on(async move {
-        // println!("Buttons initialized. Waiting for press...");
-        loop {
-            select! {
-                _ = touch_button.wait().fuse()  => {
-                    println!("touch_button 1 pressed!");
-                },
-                _ = volume_button.wait().fuse() => {
-                    println!("volume_button 2 pressed!");
-                },
-            }
-        }
-    });
+    Ok(())
 }
 
 fn play_audio(mut i2s_driver: I2sDriver<'_, I2sBiDir>) {

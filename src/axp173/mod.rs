@@ -78,7 +78,7 @@ where
         self.write_u8(0x33, 0b11000100).map_err(Error::I2c)?; // REG 33H: 充电控制1 4.2V 450mA
         self.write_u8(0x36, 0b01101100).map_err(Error::I2c)?; // REG 36H: PEK按键参数设置短按开机，长按4s关机
                                                               //self.write_u8(0x10, 0b00000000);        // REG 10H: EXTEN 做为音频使能控制，初始时关闭
-        //写一遍默认值避免遇到定制芯片
+                                                              //写一遍默认值避免遇到定制芯片
         self.write_u8(0x30, 0b01001000).map_err(Error::I2c)?; // REG 30H: VBUS-IPSOUT通路管理
         self.write_u8(0x31, 0b00000001).map_err(Error::I2c)?; // REG 31H: VOFF关机电压设置2.7V
         self.write_u8(0x32, 0b01000000).map_err(Error::I2c)?; // REG 32H: 关机设置、电池检测以及CHGLED管脚控制
@@ -113,7 +113,6 @@ where
 
             // bit |= 1 << 0;
             // self.write_u8(POWER_EXTEN_REG_10, bit).map_err(Error::I2c)?;
-
         } else {
             bit &= !(1 << 2);
             self.write_u8(POWER_EXTEN_REG_10, bit).map_err(Error::I2c)?;

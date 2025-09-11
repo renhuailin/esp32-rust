@@ -32,3 +32,5 @@ pub const ES7210_INPUT_MIC1: u8 = 0x01;
 pub const ES7210_INPUT_MIC2: u8 = 0x02;
 pub const ES7210_INPUT_MIC3: u8 = 0x04;
 pub const ES7210_INPUT_MIC4: u8 = 0x08;
+
+pub const ENABLE_TDM_MAX_NUM: u8 = 3;

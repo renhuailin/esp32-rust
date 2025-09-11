@@ -4,7 +4,7 @@ use crate::utils::bits::update_bit;
 use anyhow::Result;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
 use esp_idf_hal::i2c::I2cError;
-
+use log::info;
 // 1. 在文件顶部引入 thiserror::Error
 use thiserror::Error;
 
@@ -25,6 +25,7 @@ pub struct Es7210<I2C> {
     is_open: bool,
     enabled: bool,
     clock_off_status: u8,
+    input_mics: u8,
 }
 
 impl<I2C> Es7210<I2C>
@@ -38,13 +39,14 @@ where
             is_open: false,
             enabled: false,
             clock_off_status: 0,
+            input_mics: ES7210_INPUT_MIC1
+                | ES7210_INPUT_MIC2
+                | ES7210_INPUT_MIC3
+                | ES7210_INPUT_MIC4,
         }
     }
 
     pub fn open(&mut self) -> Result<(), Error> {
-        // 配置I2C设备
-        self.i2c.write(0x01, &[0x01])?;
-
         // ret |= es7210_write_reg(codec, ES7210_RESET_REG00, 0xff);//0xff=11111111b. Reset all registers.
         // ret |= es7210_write_reg(codec, ES7210_RESET_REG00, 0x41); //0x41=01000001b. reset master mode LRCK and SCLK,
         self.write_reg(ES7210_RESET_REG_00, 0xff)?; // 复位数字部分
@@ -94,14 +96,21 @@ where
                                                       // 6: 1 – use clock doubler 0 – not use clock doubler;
                                                       // 5: Reserved
                                                       // 4:0 ADC clock divide 0/1 – no divide 2 – divide by 2
-        let input_mics =
-            ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2 | ES7210_INPUT_MIC3 | ES7210_INPUT_MIC4;
-        self.mic_select(input_mics)?;
-        self.set_channel_gain(input_mics, 0xF, 30.0)?;
+
+        self.mic_select(self.input_mics)?;
+        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
 
         //把clcok off的设置保存起来,在enbale的时候需要用到。
         self.clock_off_status = self.read_reg(ES7210_CLOCK_OFF_REG_01)?;
         self.is_open = true;
+        Ok(())
+    }
+
+    pub fn close(&mut self) -> Result<(), Error> {
+        if self.is_open {
+            self.disable()?;
+            self.is_open = false;
+        }
         Ok(())
     }
 
@@ -127,9 +136,7 @@ where
         self.write_reg(ES7210_MIC3_POWER_REG_49, 0x08)?;
         self.write_reg(ES7210_MIC4_POWER_REG_4A, 0x08)?;
 
-        let input_mics =
-            ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2 | ES7210_INPUT_MIC3 | ES7210_INPUT_MIC4;
-        self.mic_select(input_mics)?;
+        self.mic_select(self.input_mics)?;
 
         self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
 
@@ -164,14 +171,17 @@ where
     }
 
     pub fn enable(&mut self) -> Result<(), Error> {
+        self.start()?;
+        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+
         self.enabled = true;
 
         Ok(())
     }
 
     pub fn disable(&mut self) -> Result<(), Error> {
+        self.stop()?;
         self.enabled = false;
-
         Ok(())
     }
 
@@ -181,6 +191,28 @@ where
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn is_tdm_mode(&self) -> bool {
+        //  uint16_t mic_num = 0;
+        // for (int i = ES7210_INPUT_MIC1; i <= ES7210_INPUT_MIC4; i = i << 1)
+        // {
+        //     if (codec->mic_select & i)
+        //     {
+        //         mic_num++;
+        //     }
+        // }
+        // return (mic_num >= ENABLE_TDM_MAX_NUM);
+
+        return false; //我先用std channel来测试。
+
+        // let mut mic_num = 0;
+        // for i in 1..=4 {
+        //     if self.input_mics & (1 << i) != 0 {
+        //         mic_num += 1;
+        //     }
+        // }
+        // return mic_num >= ENABLE_TDM_MAX_NUM;
     }
 
     /// 设置工作模式为master
@@ -316,6 +348,7 @@ where
             // }
 
             if (input_mics & ES7210_INPUT_MIC1) != 0 {
+                info!(target: "ES7210", "Enable ES7210_INPUT_MIC1");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
                                                                            //turn on master clock
                                                                            //turn on ADC12 analog clock
@@ -326,6 +359,7 @@ where
             }
 
             if (input_mics & ES7210_INPUT_MIC2) != 0 {
+                info!(target: "ES7210", "Enable ES7210_INPUT_MIC2");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
                                                                            //turn on master clock
                                                                            //turn on ADC12 analog clock
@@ -336,6 +370,7 @@ where
             }
 
             if (input_mics & ES7210_INPUT_MIC3) != 0 {
+                info!(target: "ES7210", "Enable ES7210_INPUT_MIC3");
                 // ret |= es7210_update_reg_bit(codec, ES7210_CLOCK_OFF_REG01, 0x15, 0x00);
                 // ret |= es7210_write_reg(codec, ES7210_MIC34_POWER_REG4C, 0x00);
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
@@ -348,6 +383,7 @@ where
             }
 
             if (input_mics & ES7210_INPUT_MIC4) != 0 {
+                info!(target: "ES7210", "Enable ES7210_INPUT_MIC4");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
                                                                            //turn on master clock
                                                                            //turn on ADC34 analog clock
@@ -367,8 +403,12 @@ where
         //     ret |= es7210_write_reg(codec, ES7210_SDP_INTERFACE2_REG12, 0x00);
         // }
 
-        //确定es7210不是工作在tdm模式下
-        self.write_reg(ES7210_SDP_INTERFACE2_REG_12, 0x00)?;
+        if self.is_tdm_mode() {
+            info!(target: "ES7210", "Enable TDM mode");
+            self.write_reg(ES7210_SDP_INTERFACE2_REG_12, 0x02)?;
+        } else {
+            self.write_reg(ES7210_SDP_INTERFACE2_REG_12, 0x00)?;
+        }
 
         Ok(())
     }

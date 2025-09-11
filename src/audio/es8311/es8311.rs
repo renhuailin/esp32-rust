@@ -1,55 +1,17 @@
 // src/es8311.rs
+use crate::audio::es8311::reg::*;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
-
 // 定义错误类型，这里我们直接用I2C的错误类型
 pub type Result<T, E> = core::result::Result<T, E>;
 
 // ES8311 默认的I2C从机地址
-// const ADDR: u8 = 0x30;
 const ADDR: u8 = 0x18;
-
-// --- ES8311 寄存器地址定义 ---
-// (这些地址来自ES8311数据手册)
-const ES8311_RESET_REG_00: u8 = 0x00;
-const ES8311_CLK_MANAGER_REG_01: u8 = 0x01;
-const ES8311_CLK_MANAGER_REG_02: u8 = 0x02;
-const ES8311_CLK_MANAGER_REG_03: u8 = 0x03;
-const ES8311_CLOCK_MANAGER_REG_04: u8 = 0x04;
-const ES8311_CLOCK_MANAGER_REG_05: u8 = 0x05;
-const ES8311_CLOCK_MANAGER_REG_06: u8 = 0x06;
-const ES8311_GPIO_REG: u8 = 0x07;
-const ES8311_MASTER_MODE_REG: u8 = 0x08;
-
-const ES8311_SDPIN_REG_09: u8 = 0x09;
-const ES8311_SDPOUT_REG_0A: u8 = 0x0A;
-const ES8311_SYSTEM_REG_0B: u8 = 0x0B;
-const ES8311_SYSTEM_REG_0C: u8 = 0x0C;
-const ES8311_SYSTEM_REG_0D: u8 = 0x0D;
-const ES8311_SYSTEM_REG_0E: u8 = 0x0E;
-
-const ES8311_SYSTEM_REG_10: u8 = 0x10;
-const ES8311_SYSTEM_REG_11: u8 = 0x11;
-const ES8311_SYSTEM_REG_12: u8 = 0x12;
-const ES8311_SYSTEM_REG_13: u8 = 0x13;
-const ES8311_SYSTEM_REG_14: u8 = 0x14;
-const ES8311_ADC_REG_15: u8 = 0x15;
-const ES8311_ADC_REG_16: u8 = 0x16;
-
-const ES8311_ADC_REG_1B: u8 = 0x1B;
-const ES8311_ADC_REG_1C: u8 = 0x1C;
-
-const ES8311_ADC_REG17: u8 = 0x17;
-
-const ES8311_DAC_REG_37: u8 = 0x37;
-const ES8311_GPIO_REG_44: u8 = 0x44;
-const ES8311_GP_REG_45: u8 = 0x45;
-
-const ES8311_DAC_VOLUME_REG_32: u8 = 0x32;
 
 /// 代表ES8311音频编解码器驱动
 pub struct Es8311<I2C> {
     i2c: I2C,
+    is_open: bool,
 }
 
 impl<I2C, E> Es8311<I2C>
@@ -58,24 +20,16 @@ where
 {
     /// 创建一个新的ES8311驱动实例
     pub fn new(i2c: I2C) -> Self {
-        Self { i2c }
+        Self {
+            i2c,
+            is_open: false,
+        }
     }
 
     /// 初始化CODEC芯片
     /// 这是最关键的函数，它按照datasheet的推荐序列来配置芯片
     pub fn init<D: DelayUs<u32>>(&mut self, delay: &mut D) -> Result<(), E> {
         println!("开始初始化ES8311");
-
-        // let b = self.read_u8(ES8311_GPIO_REG_44);
-
-        // match b {
-        //     Ok(b) => {
-        //         println!("{}=0x{:X}={:08b}", b, b, b);
-        //     }
-        //     Err(_) => {
-        //         println!("读取ES8311 reg 失败");
-        //     }
-        // }
 
         // 1. 复位芯片
         /* Enhance ES8311 I2C noise immunity */
@@ -245,7 +199,7 @@ where
 
         adc_iface &= 0xBF; // 0xBF=10111111,把第6位清零。0x0A寄存器的第6位是SDP out mute
                            // 0 – unmute (default)
-                           // 1 – mute,也取消静音。
+                           // 1 – mute静音。
 
         // reg09v &= !(0x06);
 
@@ -295,11 +249,75 @@ where
         self.write_reg(ES8311_DAC_REG_37, 0x08)?;
         self.write_reg(ES8311_GP_REG_45, 0x00)?;
 
+        self.is_open = true;
+
+        Ok(())
+    }
+
+    pub fn suspend(&mut self) -> Result<(), E> {
+        // int ret = es8311_write_reg(codec, ES8311_DAC_REG32, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG17, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0E, 0xFF);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG12, 0x02);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG14, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0D, 0xFA);
+        // ret |= es8311_write_reg(codec, ES8311_ADC_REG15, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG02, 0x10);
+        // ret |= es8311_write_reg(codec, ES8311_RESET_REG00, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_RESET_REG00, 0x1F);
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG01, 0x30);
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG01, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_GP_REG45, 0x00);
+        // ret |= es8311_write_reg(codec, ES8311_SYSTEM_REG0D, 0xFC);
+        // ret |= es8311_write_reg(codec, ES8311_CLK_MANAGER_REG02, 0x00);
+        // return ret;
+
+        self.write_reg(ES8311_DAC_VOLUME_REG_32, 0x00)?; // set DAC volume to -95.5dB (default) mute
+        self.write_reg(ES8311_ADC_REG_17, 0x00)?; // set ADC volume to -95.5dB (default)
+        self.write_reg(ES8311_SYSTEM_REG_0E, 0xFF)?; // power down PGA ADC reset modulator
+        self.write_reg(ES8311_SYSTEM_REG_12, 0x02)?; // power down DAC, disable  internal reference circuits for DAC output (default)
+
+        self.write_reg(ES8311_SYSTEM_REG_14, 0x00)?;
+        self.write_reg(ES8311_SYSTEM_REG_0D, 0xFA)?; //关闭内部各种电路的电源。只enable analog DAC reference circuits
+        self.write_reg(ES8311_ADC_REG_15, 0x00)?;
+        self.write_reg(ES8311_CLK_MANAGER_REG_02, 0x10)?;
+        self.write_reg(ES8311_RESET_REG_00, 0x00)?;
+        self.write_reg(ES8311_RESET_REG_00, 0x1F)?; //先置零，再恢复为默认值
+        self.write_reg(ES8311_CLK_MANAGER_REG_01, 0x30)?; //MCLK on BCLK on
+        self.write_reg(ES8311_CLK_MANAGER_REG_01, 0x00)?; // MCLK off BCLK off
+        self.write_reg(ES8311_GP_REG_45, 0x00)?; // BCLK/LRCK  pullup on
+        self.write_reg(ES8311_SYSTEM_REG_0D, 0xFC)?; //关闭内部各种电路的电源。保持vmid power down
+        self.write_reg(ES8311_CLK_MANAGER_REG_02, 0x00)?;
+
+        Ok(())
+    }
+
+    pub fn disable(&mut self) -> Result<(), E> {
+        self.close()
+    }
+
+    pub fn close(&mut self) -> Result<(), E> {
+        // audio_codec_es8311_t *codec = (audio_codec_es8311_t *) h;
+        // if (codec == NULL) {
+        //     return ESP_CODEC_DEV_INVALID_ARG;
+        // }
+        // if (codec->is_open) {
+        //     es8311_suspend(codec);
+        //     es8311_pa_power(codec, ES_PA_DISABLE);
+        //     codec->is_open = false;
+        // }
+
+        if self.is_open {
+            self.suspend()?;
+            self.pa_power(false)?;
+            self.is_open = false;
+        }
+
         Ok(())
     }
 
     /// 设置播放音量
-    /// `volume`: 255 (最大) -  0(静音)
+    /// `volume`: 100 (最大) -  0(静音)
     pub fn set_voice_volume(&mut self, volume: u8) -> Result<(), E> {
         let mut percent = volume.min(100); // 确保值在范围内
         percent = volume.max(0);
@@ -409,6 +427,13 @@ where
             regv |= 0x80;
         }
         self.write_reg(ES8311_CLK_MANAGER_REG_01, regv)?;
+        Ok(())
+    }
+
+    /// 因为es8311的由axp 173来控制的，所以先不实现它。
+    /// PA 通常指的是 Power Amplifier（功率放大器）
+    fn pa_power(&self, enable: bool) -> Result<(), E> {
+        let _ = enable;
         Ok(())
     }
 }

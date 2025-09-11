@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
 
@@ -9,6 +10,7 @@ use esp_idf_hal::i2s::config::{
     TdmSlotMask,
 };
 use esp_idf_hal::i2s::I2sTx;
+use esp_idf_hal::task::asynch::Notification;
 use esp_idf_hal::task::block_on;
 use esp_idf_hal::{
     delay::{Delay, FreeRtos, BLOCK},
@@ -41,6 +43,8 @@ use futures::{select, FutureExt};
 use log::info;
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
+// 1. 引入 std::sync::mpsc
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 // 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
 pub type AudioBuffer = VecDeque<u8>;
@@ -58,6 +62,12 @@ impl SharedAudioState {
             buffer: Mutex::new(VecDeque::new()),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AudioCommand {
+    StartRecording,
+    StopAndPlayback,
 }
 
 fn main() -> Result<()> {
@@ -129,12 +139,12 @@ fn main() -> Result<()> {
     let backlight_pin = pins.gpio8;
 
     // 2. 配置LEDC通道，并绑定到背光引脚
-    let mut channel =
+    let mut channel_led =
         LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
 
     // 3. 设置亮度 (通过设置占空比)
-    let max_duty = channel.get_max_duty();
-    channel.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
+    let max_duty = channel_led.get_max_duty();
+    channel_led.set_duty(max_duty * 3 / 4).unwrap(); // 设置为50%的亮度
 
     // 初始化 ST7789 屏幕
 
@@ -306,9 +316,8 @@ fn main() -> Result<()> {
         }
     }
 
-    es8311.set_voice_volume(50)?;
-    play_audio(i2s_clone_for_player.lock().unwrap());
-    // let mut i2s_recorder_guard = i2s_clone_for_recorder.lock().unwrap();
+    // es8311.set_voice_volume(50)?;
+    // play_audio(i2s_clone_for_player.lock().unwrap());
 
     let mut es7210 = Es7210::new(es7210_i2c_proxy);
     info!("初始化ES7210...");
@@ -320,15 +329,152 @@ fn main() -> Result<()> {
     let once_timer = EspTaskTimerService::new()
         .unwrap()
         .timer(move || {
-            channel.set_duty(0).unwrap();
+            channel_led.set_duty(0).unwrap();
             info!("One-shot timer triggered");
-            channel.set_duty(max_duty).unwrap(); //关闭屏幕背光。
+            channel_led.set_duty(max_duty).unwrap(); //关闭屏幕背光。
         })
         .unwrap();
 
     once_timer.after(Duration::from_secs(2)).unwrap();
 
-    thread::sleep(Duration::from_secs(3));
+    // 1. 创建一个用于发送控制命令的Channel
+    // let (cmd_sender, cmd_receiver) = unbounded::<AudioCommand>();
+    let (cmd_sender, cmd_receiver): (Sender<AudioCommand>, Receiver<AudioCommand>) = channel();
+
+    // ===============================================================
+    // == 2. 启动一个独立的“音频处理”后台任务
+    // ===============================================================
+    let i2s_clone = Arc::clone(&i2s_driver_arc);
+    let state_clone = Arc::clone(&shared_state_arc);
+
+    let notification = Arc::new(Notification::new());
+    let notifier = Arc::clone(&notification);
+    let notifier2 = Arc::clone(&notification);
+    let handle = thread::spawn(move || {
+        // block_on(async move {
+        //     // println!("Buttons initialized. Waiting for press...");
+        //     let mut speaking = false;
+        //     loop {
+        //         select! {
+        //             i = notifier2.wait().fuse()  => {
+
+        //                 if  i.get() == 1 {
+        //                     println!("开始录音!");
+        //                     speaking = true;
+        //                     //在这里开始录音
+        //                 } else {
+        //                     println!("停止录音!");
+        //                     speaking = false;
+        //                     log::info!("==> Action: Playback Recorded Audio");
+        //                     //在这里停止录音并播放
+        //                     // touch_button.enable_interrupt().unwrap();
+        //                 }
+        //             }
+        //         }
+        //     }
+        // });
+
+        let mut is_recording = false;
+        loop {
+            // a. 检查是否有新的控制命令进来 (非阻塞)
+            if let Ok(command) = cmd_receiver.recv() {
+                match command {
+                    AudioCommand::StartRecording => {
+                        log::info!("[Audio Task] Received StartRecording command.");
+                        // 清空旧缓冲区，准备录音
+                        // state_clone.buffer.lock().unwrap().clear();
+                        is_recording = true;
+                    }
+                    AudioCommand::StopAndPlayback => {
+                        log::info!("[Audio Task] Received StopAndPlayback command.");
+                        is_recording = false;
+
+                        // // --- 执行播放逻辑 ---
+                        // let playback_data: Vec<u8>;
+                        // {
+                        //     let mut buffer_guard = state_clone.buffer.lock().unwrap();
+                        //     playback_data = buffer_guard.iter().cloned().collect();
+                        //     buffer_guard.clear();
+                        // }
+
+                        // if !playback_data.is_empty() {
+                        //     log::info!(
+                        //         "[Audio Task] Playing back {} bytes...",
+                        //         playback_data.len()
+                        //     );
+                        //     let mut i2s_guard = i2s_clone.lock().unwrap();
+                        //     if let Err(e) = i2s_guard.write_all(&playback_data, BLOCK) {
+                        //         log::error!("[Audio Task] Playback failed: {:?}", e);
+                        //     } else {
+                        //         log::info!("[Audio Task] Playback finished.");
+                        //     }
+                        // }
+                    }
+                }
+            }
+
+            // // b. 如果当前处于录音状态，就持续读取数据
+            // if is_recording {
+            //     const READ_CHUNK_SIZE: usize = 1024;
+            //     let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
+            //     let mut i2s_guard = i2s_clone.lock().unwrap();
+            //     if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
+            //         if bytes_read > 0 {
+            //             state_clone
+            //                 .buffer
+            //                 .lock()
+            //                 .unwrap()
+            //                 .extend(&read_buffer[..bytes_read]);
+            //         }
+            //     }
+            // } else {
+            //     // 如果不录音，就短暂休眠，避免CPU空转
+            //     thread::sleep(Duration::from_millis(20));
+
+            //     // 1. 定义一个本地变量来存放要播放的数据
+            //     let playback_data: Vec<u8>;
+
+            //     // 2. 创建一个临时的作用域来持有锁
+            //     {
+            //         let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
+            //         if !buffer_guard.is_empty() {
+            //             // 3. 将VecDeque中的数据克隆到一个新的Vec中
+            //             playback_data = buffer_guard.iter().cloned().collect();
+
+            //             // 4. (可选) 播放后清空共享缓冲区
+            //             buffer_guard.clear();
+            //         } else {
+            //             log::warn!("Buffer is empty, nothing to play.");
+            //             // 如果缓冲区是空的，直接返回，避免后续操作
+            //             return;
+            //         }
+            //     } // <-- MutexGuard在这里离开作用域，锁被立即释放！
+
+            //     let mut driver_guard = i2s_clone_for_player.lock().unwrap();
+
+            //     // 4. 直接将字节缓冲区传递给write_all，不再需要任何转换
+            //     if let Err(e) = driver_guard.write_all(&playback_data, BLOCK) {
+            //         log::error!("Playback failed: {:?}", e);
+            //     } else {
+            //         log::info!("Playback finished.");
+            //     }
+            // }
+        }
+    });
+
+    // handle.join().unwrap();
+    log::info!("Background audio processing task started.");
+
+    // //  定时熄屏
+    // let once_timer2 = EspTaskTimerService::new()
+    //     .unwrap()
+    //     .timer(move || {
+    //         info!("One-shot timer 2 triggered");
+    //         cmd_sender.send(AudioCommand::StartRecording).unwrap();
+    //     })
+    //     .unwrap();
+
+    // once_timer2.after(Duration::from_secs(2)).unwrap();
 
     let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
     let mut volume_button = button::Button::new(pins.gpio47).unwrap();
@@ -346,58 +492,18 @@ fn main() -> Result<()> {
                 _ = touch_button.wait().fuse()  => {
 
                     if !speaking {
-                        speaking = true;
+
                         println!("touch_button 1 pressed!");
-
-                        let mut driver_guard = i2s_clone_for_recorder.lock().unwrap();
-                        // let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
-                        // app.read_audio(driver_guard,buffer_guard).unwrap();
-                        const READ_CHUNK_SIZE: usize = 1024;
-                        let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
-                        if let Ok(bytes_read) = driver_guard.read(&mut read_buffer, BLOCK) {
-                            if bytes_read > 0 {
-                                let samples_read = bytes_read / 2;
-                                // 锁定共享缓冲区并写入数据
-                                let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
-                                // buffer_guard.extend_from_slice(&read_buffer[..samples_read]);
-                                buffer_guard.extend(&read_buffer[..samples_read]);
-                            }
-                        };
-
+                        cmd_sender.send(AudioCommand::StartRecording).unwrap();
+                        // notifier.notify(NonZeroU32::new(1).unwrap());
+                        speaking = true;
                         touch_button.enable_interrupt().unwrap();
                     } else {
                         println!("is speaking !");
+                        // 发送“停止并播放”命令
+                        notifier.notify(NonZeroU32::new(2).unwrap());
                         speaking = false;
                         log::info!("==> Action: Playback Recorded Audio");
-
-                                    // 1. 定义一个本地变量来存放要播放的数据
-                        let playback_data: Vec<u8>;
-
-                        // 2. 创建一个临时的作用域来持有锁
-                        {
-                            let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
-                            if !buffer_guard.is_empty() {
-                                // 3. 将VecDeque中的数据克隆到一个新的Vec中
-                                playback_data = buffer_guard.iter().cloned().collect();
-
-                                // 4. (可选) 播放后清空共享缓冲区
-                                buffer_guard.clear();
-                            } else {
-                                log::warn!("Buffer is empty, nothing to play.");
-                                // 如果缓冲区是空的，直接返回，避免后续操作
-                                return;
-                            }
-                        } // <-- MutexGuard在这里离开作用域，锁被立即释放！
-
-                        let mut driver_guard = i2s_clone_for_player.lock().unwrap();
-
-                        // 4. 直接将字节缓冲区传递给write_all，不再需要任何转换
-                        if let Err(e) = driver_guard.write_all(&playback_data, BLOCK) {
-                            log::error!("Playback failed: {:?}", e);
-                        } else {
-                            log::info!("Playback finished.");
-                        }
-
                         touch_button.enable_interrupt().unwrap();
                     }
                 }

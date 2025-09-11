@@ -1,7 +1,15 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
 
 use anyhow::{anyhow, Result};
 use esp_idf_hal::delay;
+use esp_idf_hal::i2s::config::{
+    ClockSource, MclkMultiple, TdmClkConfig, TdmConfig, TdmGpioConfig, TdmSlot, TdmSlotConfig,
+    TdmSlotMask,
+};
+use esp_idf_hal::i2s::I2sTx;
+use esp_idf_hal::task::block_on;
 use esp_idf_hal::{
     delay::{Delay, FreeRtos, BLOCK},
     gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
@@ -18,6 +26,9 @@ use esp_idf_hal::{
 use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
+use esp_idf_test2::audio::es7210::es7210::Es7210;
+use esp_idf_test2::audio::{AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256};
+use esp_idf_test2::common::button;
 use esp_idf_test2::{
     audio,
     axp173::{Axp173, Ldo},
@@ -25,9 +36,29 @@ use esp_idf_test2::{
     led::WS2812RMT,
     wifi::wifi,
 };
+use esp_idf_test2::{Application, ApplicationState};
+use futures::{select, FutureExt};
 use log::info;
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
+
+// 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
+pub type AudioBuffer = VecDeque<u8>;
+
+// 共享状态结构体
+pub struct SharedAudioState {
+    pub buffer: Mutex<AudioBuffer>,
+    // 我们可以添加一个Condvar，以便在录音满或播放空时进行等待
+    // 但为了简单起见，我们先只用Mutex
+}
+
+impl SharedAudioState {
+    pub fn new() -> Self {
+        Self {
+            buffer: Mutex::new(VecDeque::new()),
+        }
+    }
+}
 
 fn main() -> Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -58,6 +89,7 @@ fn main() -> Result<()> {
     //    axp_i2c_proxy 和 es_i2c_proxy 现在是两个可以独立使用的I2C设备
     let axp173_i2c_proxy = bus_manager.acquire_i2c();
     let es8311_i2c_proxy = bus_manager.acquire_i2c();
+    let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
     /* */
     // init_wifi(peripherals, sysloop, &app_config)?;
@@ -200,13 +232,34 @@ fn main() -> Result<()> {
 
     // 初始化I2S
     let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
-    // let peripherals = Peripherals::take().unwrap();
+    // let default_dma_buffer_count = 6;
+    // let default_frames_per_dma_buffer = 240;
+    // let i2s_channel_config = Config::new()
+    //     .dma_buffer_count(default_dma_buffer_count)
+    //     .frames_per_buffer(default_frames_per_dma_buffer);
+    // let tdm_config = TdmConfig::new(
+    //     i2s_channel_config,
+    //     TdmClkConfig::new(
+    //         AUDIO_INPUT_SAMPLE_RATE,
+    //         ClockSource::default(),
+    //         MclkMultiple::M256,
+    //     ),
+    //     TdmSlotConfig::philips_slot_default(
+    //         DataBitWidth::Bits16,
+    //         TdmSlot::Slot0 | TdmSlot::Slot1 | TdmSlot::Slot2 | TdmSlot::Slot3,
+    //     ),
+    //     TdmGpioConfig::new(false, false, false),
+    // );
+
     let bclk = pins.gpio42;
     let din = pins.gpio45;
     let dout = pins.gpio39;
     let mclk = pins.gpio41.into();
     let ws = pins.gpio40;
 
+    // let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
+
+    // i2s_config
     let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
         peripherals.i2s0,
         &std_config,
@@ -218,12 +271,28 @@ fn main() -> Result<()> {
     )
     .unwrap();
 
+    // let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+    //     peripherals.i2s0,
+    //     &std_config,
+
+    // let mut i2s_driver =
+    //     I2sDriver::<I2sTx>::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws)
+    //         .unwrap();
+
+    // let mut i2s_tdm_rx = I2sDriver::new_tdm_rx(peripherals.i2s0, &tdm_config, bclk, din, mclk, ws);
+
+    i2s_driver.tx_enable().unwrap();
+    i2s_driver.rx_enable().unwrap();
     // let mut i2s_driver =
     //     I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
 
-    i2s_driver.tx_enable().unwrap();
-    // let mut i2s_driver =
-    //     I2sDriver::new_std_tx(peripherals.i2s0, &std_config, bclk, dout, mclk, ws).unwrap();
+    // I2sDriver::new_tdm_rx(peripherals.i2s0, std_config, bclk, din, mclk, ws);
+    let i2s_driver_arc = Arc::new(Mutex::new(i2s_driver));
+    let shared_state_arc = Arc::new(SharedAudioState::new());
+
+    let i2s_clone_for_recorder = Arc::clone(&i2s_driver_arc);
+    let i2s_clone_for_player = Arc::clone(&i2s_driver_arc);
+    let state_clone_for_recorder = Arc::clone(&shared_state_arc);
 
     println!("初始化I2S完成！");
 
@@ -237,20 +306,108 @@ fn main() -> Result<()> {
         }
     }
 
-    // play_audio(i2s_driver);
+    es8311.set_voice_volume(50)?;
+    play_audio(i2s_clone_for_player.lock().unwrap());
+    // let mut i2s_recorder_guard = i2s_clone_for_recorder.lock().unwrap();
+
+    let mut es7210 = Es7210::new(es7210_i2c_proxy);
+    info!("初始化ES7210...");
+    es7210.open()?;
+    info!("enable ES7210...");
+    es7210.enable()?;
 
     //  定时熄屏
     let once_timer = EspTaskTimerService::new()
         .unwrap()
         .timer(move || {
-            channel.set_duty(0).unwrap(); // 设置为50%的亮度
+            channel.set_duty(0).unwrap();
             info!("One-shot timer triggered");
+            channel.set_duty(max_duty).unwrap(); //关闭屏幕背光。
         })
         .unwrap();
 
     once_timer.after(Duration::from_secs(2)).unwrap();
 
     thread::sleep(Duration::from_secs(3));
+
+    let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
+    let mut volume_button = button::Button::new(pins.gpio47).unwrap();
+
+    let mut application_state = ApplicationState::Idle;
+
+    let mut app = Application::new();
+
+    info!("Waiting for button press...");
+    block_on(async move {
+        // println!("Buttons initialized. Waiting for press...");
+        let mut speaking = false;
+        loop {
+            select! {
+                _ = touch_button.wait().fuse()  => {
+
+                    if !speaking {
+                        speaking = true;
+                        println!("touch_button 1 pressed!");
+
+                        let mut driver_guard = i2s_clone_for_recorder.lock().unwrap();
+                        // let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
+                        // app.read_audio(driver_guard,buffer_guard).unwrap();
+                        const READ_CHUNK_SIZE: usize = 1024;
+                        let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
+                        if let Ok(bytes_read) = driver_guard.read(&mut read_buffer, BLOCK) {
+                            if bytes_read > 0 {
+                                let samples_read = bytes_read / 2;
+                                // 锁定共享缓冲区并写入数据
+                                let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
+                                // buffer_guard.extend_from_slice(&read_buffer[..samples_read]);
+                                buffer_guard.extend(&read_buffer[..samples_read]);
+                            }
+                        };
+
+                        touch_button.enable_interrupt().unwrap();
+                    } else {
+                        println!("is speaking !");
+                        speaking = false;
+                        log::info!("==> Action: Playback Recorded Audio");
+
+                                    // 1. 定义一个本地变量来存放要播放的数据
+                        let playback_data: Vec<u8>;
+
+                        // 2. 创建一个临时的作用域来持有锁
+                        {
+                            let mut buffer_guard = state_clone_for_recorder.buffer.lock().unwrap();
+                            if !buffer_guard.is_empty() {
+                                // 3. 将VecDeque中的数据克隆到一个新的Vec中
+                                playback_data = buffer_guard.iter().cloned().collect();
+
+                                // 4. (可选) 播放后清空共享缓冲区
+                                buffer_guard.clear();
+                            } else {
+                                log::warn!("Buffer is empty, nothing to play.");
+                                // 如果缓冲区是空的，直接返回，避免后续操作
+                                return;
+                            }
+                        } // <-- MutexGuard在这里离开作用域，锁被立即释放！
+
+                        let mut driver_guard = i2s_clone_for_player.lock().unwrap();
+
+                        // 4. 直接将字节缓冲区传递给write_all，不再需要任何转换
+                        if let Err(e) = driver_guard.write_all(&playback_data, BLOCK) {
+                            log::error!("Playback failed: {:?}", e);
+                        } else {
+                            log::info!("Playback finished.");
+                        }
+
+                        touch_button.enable_interrupt().unwrap();
+                    }
+                }
+                _ = volume_button.wait().fuse() => {
+                    println!("volume_button 2 pressed!");
+                    volume_button.enable_interrupt().unwrap();
+                },
+            }
+        }
+    });
 
     info!("Test complete. Entering infinite loop.");
 
@@ -260,13 +417,14 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn play_audio(mut i2s_driver: I2sDriver<'_, I2sBiDir>) {
+fn play_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     const PCM_DATA: &'static [u8] = include_bytes!("../assets/sound.pcm");
 
     info!(
         "Embedded PCM data size: {} bytes. Starting playback...",
         PCM_DATA.len()
     );
+
     // match i2s_driver.write_all(PCM_DATA, BLOCK) {
     //     Ok(_) => info!("Playback finished successfully!"),
     //     Err(e) => println!("I2S write error: {:?}", e),

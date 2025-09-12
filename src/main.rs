@@ -231,7 +231,7 @@ fn main() -> Result<()> {
 
     // es8311.init(&mut delay).unwrap();
 
-    match es8311.init(&mut delay) {
+    match es8311.open(&mut delay) {
         Ok(_) => {
             println!("初始化ES8311成功");
         }
@@ -318,7 +318,7 @@ fn main() -> Result<()> {
     }
 
     es8311.set_voice_volume(50)?;
-    play_audio(i2s_clone_for_player.lock().unwrap());
+    // play_audio(i2s_clone_for_player.lock().unwrap());
 
     let mut es7210 = Es7210::new(es7210_i2c_proxy);
     info!("初始化ES7210...");
@@ -338,6 +338,10 @@ fn main() -> Result<()> {
 
     once_timer.after(Duration::from_secs(2)).unwrap();
 
+    // log::info!("[Audio Task] play_audio start.");
+    // play_audio(i2s_clone_for_player.lock().unwrap());
+    // log::info!("[Audio Task] play_audio finished.");
+
     // 1. 创建一个用于发送控制命令的Channel
     let (cmd_sender, cmd_receiver) = unbounded::<AudioCommand>();
     // let (cmd_sender, cmd_receiver): (Sender<AudioCommand>, Receiver<AudioCommand>) = channel();
@@ -348,9 +352,9 @@ fn main() -> Result<()> {
     let i2s_clone = Arc::clone(&i2s_driver_arc);
     let state_clone = Arc::clone(&shared_state_arc);
 
-    let notification = Arc::new(Notification::new());
-    let notifier = Arc::clone(&notification);
-    let notifier2 = Arc::clone(&notification);
+    // let notification = Arc::new(Notification::new());
+    // let notifier = Arc::clone(&notification);
+    // let notifier2 = Arc::clone(&notification);
 
     thread::spawn(move || {
         let mut is_recording = false;
@@ -373,17 +377,22 @@ fn main() -> Result<()> {
 
                         if !buffer_guard.is_empty() {
                             log::info!("[Audio Task] Playing back {} bytes...", buffer_guard.len());
-                            let mut i2s_guard = i2s_clone.lock().unwrap();
-
+                            let i2s_clone_for_player2 = Arc::clone(&i2s_driver_arc);
+                            let mut i2s_guard = i2s_clone_for_player2.lock().unwrap();
                             // VecDeque 提供了 as_slices() 方法，它返回一或两个连续的内存切片
                             let (slice1, slice2) = buffer_guard.as_slices();
-
+                            // for frame in slice1 {
+                            //     info!("[Audio Task] Playback frame: {:08b}", frame);
+                            // }
                             // 播放第一个切片
                             if let Err(e) = i2s_guard.write_all(slice1, BLOCK) {
                                 log::error!("[Audio Task] Playback failed on slice1: {:?}", e);
                             } else {
                                 // 如果有第二个切片，继续播放
                                 if !slice2.is_empty() {
+                                    // for frame in slice2 {
+                                    //     info!("[Audio Task] Playback frame: {:08b}", frame);
+                                    // }
                                     if let Err(e) = i2s_guard.write_all(slice2, BLOCK) {
                                         log::error!(
                                             "[Audio Task] Playback failed on slice2: {:?}",
@@ -479,7 +488,13 @@ fn main() -> Result<()> {
 
                         println!("touch_button 1 pressed!");
                         cmd_sender.send(AudioCommand::StartRecording).unwrap();
-                        // notifier.notify(NonZeroU32::new(1).unwrap());
+
+                        // let mut i2s_guard = i2s_clone_for_player.lock().unwrap();
+
+                        // play_audio(i2s_guard);
+                        // log::info!("[Audio Task] play_audio finished.");
+
+
                         speaking = true;
                         touch_button.enable_interrupt().unwrap();
                     } else {
@@ -531,7 +546,7 @@ fn play_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
         match i2s_driver.write(chunk, BLOCK) {
             Ok(bytes_written) => {
                 // 打印一些进度信息，方便调试
-                info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                // info!("Successfully wrote {} bytes to I2S.", bytes_written);
             }
             Err(e) => {
                 // 如果在写入过程中出错，打印错误并跳出循环

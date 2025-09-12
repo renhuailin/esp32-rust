@@ -18,7 +18,7 @@ pub enum Error {
     InvalidMicInputMode,
 }
 
-const ADDR: u8 = 0x18;
+const ADDR: u8 = 0x41;
 
 pub struct Es7210<I2C> {
     i2c: I2C,
@@ -39,10 +39,11 @@ where
             is_open: false,
             enabled: false,
             clock_off_status: 0,
-            input_mics: ES7210_INPUT_MIC1
-                | ES7210_INPUT_MIC2
-                | ES7210_INPUT_MIC3
-                | ES7210_INPUT_MIC4,
+            input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
+            // input_mics: ES7210_INPUT_MIC1
+            //     | ES7210_INPUT_MIC2
+            //     | ES7210_INPUT_MIC3
+            //     | ES7210_INPUT_MIC4,
         }
     }
 
@@ -172,7 +173,7 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0x01, 30.0)?;
 
         self.enabled = true;
 
@@ -287,18 +288,22 @@ where
         //     return ret == 0 ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;
         let gain = self.get_db(db);
         if (input_mics & ES7210_INPUT_MIC1) & (channel_mask & self.make_channel_mask(0)) != 0 {
+            info!("set mic1 gain to {:08b}", gain);
             self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x0f, gain)?;
         }
 
         if (input_mics & ES7210_INPUT_MIC2) & (channel_mask & self.make_channel_mask(1)) != 0 {
+            info!("set mic2 gain to {:08b}", gain);
             self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x0f, gain)?;
         }
 
         if (input_mics & ES7210_INPUT_MIC3) & (channel_mask & self.make_channel_mask(2)) != 0 {
+            info!("set mic3 gain to {:08b}", gain);
             self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x0f, gain)?;
         }
 
         if (input_mics & ES7210_INPUT_MIC4) & (channel_mask & self.make_channel_mask(3)) != 0 {
+            info!("set mic4 gain to {:08b}", gain);
             self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x0f, gain)?;
         }
 

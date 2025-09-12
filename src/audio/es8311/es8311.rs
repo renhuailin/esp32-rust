@@ -28,7 +28,7 @@ where
 
     /// 初始化CODEC芯片
     /// 这是最关键的函数，它按照datasheet的推荐序列来配置芯片
-    pub fn init<D: DelayUs<u32>>(&mut self, delay: &mut D) -> Result<(), E> {
+    pub fn open<D: DelayUs<u32>>(&mut self, delay: &mut D) -> Result<(), E> {
         println!("开始初始化ES8311");
 
         // 1. 复位芯片

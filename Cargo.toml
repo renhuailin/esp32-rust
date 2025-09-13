@@ -1,5 +1,5 @@
 [package]
-name = "esp-idf-test2"
+name = "xiaoxin_esp32"
 version = "0.1.0"
 authors = ["任懷林 <renhuailin@gmail.com>"]
 edition = "2021"
@@ -7,7 +7,7 @@ resolver = "2"
 rust-version = "1.77"
 
 [[bin]]
-name = "esp-idf-test2"
+name = "xiaoxin_esp32"
 harness = false # do not use the built in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
@@ -74,8 +74,10 @@ thiserror = "2.0.16"
 crossbeam-channel = "0.5.15"
 
 
-[[package.metadata.esp-idf-sys.extra_components]]
-
+[package.metadata.esp-idf-sys]
+extra_components = [
+    { component_dirs = [ "components/libopus" ], bindings_header = "components/libopus/bindings.h", bindings_module = "es32_component_opus" }
+]
 
 [build-dependencies]
 embuild = "0.33"

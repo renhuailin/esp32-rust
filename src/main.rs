@@ -29,21 +29,22 @@ use esp_idf_hal::{
 use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
-use esp_idf_test2::audio::es7210::es7210::Es7210;
-use esp_idf_test2::audio::{AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256};
-use esp_idf_test2::common::button;
-use esp_idf_test2::{
+use futures::{select, FutureExt};
+use log::info;
+use mipidsi::error;
+use shared_bus::BusManagerSimple;
+use xiaoxin_esp32::audio::es7210::es7210::Es7210;
+use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
+use xiaoxin_esp32::audio::{AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256};
+use xiaoxin_esp32::common::button;
+use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
     lcd,
     led::WS2812RMT,
     wifi::wifi,
 };
-use esp_idf_test2::{Application, ApplicationState};
-use futures::{select, FutureExt};
-use log::info;
-use mipidsi::error;
-use shared_bus::BusManagerSimple;
+use xiaoxin_esp32::{Application, ApplicationState};
 // 1. 引入 std::sync::mpsc
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -175,6 +176,10 @@ fn main() -> Result<()> {
     .unwrap();
 
     lcd::LcdSt7789::init(driver, dc.into(), cs.into());
+
+    {
+        let audio_decoder = OpusAudioDecoder::new(48000, 1).unwrap();
+    }
 
     //关闭背光
 

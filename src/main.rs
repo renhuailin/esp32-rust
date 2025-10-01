@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use crossbeam_channel::unbounded;
 use esp_idf_hal::delay;
 use esp_idf_hal::i2s::config::{
@@ -30,7 +30,7 @@ use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
 use futures::{select, FutureExt};
-use log::info;
+use log::{error, info};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
 use xiaoxin_esp32::audio::es7210::es7210::Es7210;
@@ -248,6 +248,7 @@ fn main() -> Result<()> {
 
     // 初始化I2S
     let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
+
     // let default_dma_buffer_count = 6;
     // let default_frames_per_dma_buffer = 240;
     // let i2s_channel_config = Config::new()
@@ -346,6 +347,7 @@ fn main() -> Result<()> {
     // log::info!("[Audio Task] play_audio start.");
     // play_audio(i2s_clone_for_player.lock().unwrap());
     // log::info!("[Audio Task] play_audio finished.");
+    play_p3_audio(i2s_clone_for_player.lock().unwrap());
 
     // 1. 创建一个用于发送控制命令的Channel
     let (cmd_sender, cmd_receiver) = unbounded::<AudioCommand>();
@@ -557,6 +559,112 @@ fn play_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
                 // 如果在写入过程中出错，打印错误并跳出循环
                 info!("I2S write error on a chunk: {:?}", e);
                 break;
+            }
+        }
+    }
+}
+
+///
+/// 播放p3格式的音频文件. <br/>
+/// p3格式: [1字节类型, 1字节保留, 2字节长度, Opus数据]
+///  
+fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
+    const P3_DATA: &'static [u8] = include_bytes!("../assets/activation.p3");
+
+    info!(
+        "Embedded p3 data size: {} bytes. Starting playback...",
+        P3_DATA.len()
+    );
+
+    const CHUNK_SIZE: usize = 4096;
+
+    info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
+
+    if P3_DATA.len() < 4 {
+        error!("P3 data is too small to be valid.");
+        return;
+    }
+
+    let p3_data_len = P3_DATA.len();
+    info!("P3 data length: {} bytes", p3_data_len);
+
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 1; //# 单声道
+    let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+
+    let mut offset = 0;
+
+    while offset < p3_data_len {
+        let len: [u8; 2] = P3_DATA[offset + 2..offset + 4].try_into().unwrap();
+        let frame_len = u16::from_be_bytes(len) as usize;
+
+        let opus_data = &P3_DATA[(offset + 4)..(offset + 4 + frame_len)];
+        offset += 4 + frame_len;
+        info!("offset {} bytes...", offset);
+
+        // decoder = decoder.decode(sample_rate, channels);
+        let decode_result = opus_decoder.decode(opus_data);
+
+        match decode_result {
+            Ok(pcm_data) => {
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+
+                let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_stereo_buffer[i * 2] = sample; // 左声道
+                    pcm_stereo_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_stereo_buffer.as_ptr() as *const u8,
+                        pcm_stereo_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+
+                // 如果p3是双声道的，或者使用了单声道的 I2S 配置，我们就可以直接使用 decode 后的音频数据。
+                // // 1. 首先，获取一个指向有效数据的切片
+                // let pcm_slice: &[i16] = &pcm_data;
+
+                // // 2. 使用unsafe块来进行零成本的类型转换
+                // let pcm_bytes: &[u8] = unsafe {
+                //     // a. 获取i16切片的裸指针和长度（以i16为单位）
+                //     let ptr = pcm_slice.as_ptr();
+                //     let len_in_i16 = pcm_slice.len();
+
+                //     // b. 使用`core::slice::from_raw_parts`来创建一个新的字节切片
+                //     //    - 将i16指针强制转换成u8指针
+                //     //    - 将长度（以i16为单位）乘以每个i16的字节数（2），得到总的字节长度
+                //     core::slice::from_raw_parts(
+                //         ptr as *const u8,
+                //         len_in_i16 * std::mem::size_of::<i16>(),
+                //     )
+                // };
+
+                // // 3. 使用 .chunks() 方法将整个PCM数据切分成多个小块
+                for chunk in pcm_stereo_bytes.chunks(CHUNK_SIZE) {
+                    // 4. 逐块写入I2S驱动
+                    //    i2s_driver.write() 会阻塞，直到这一小块数据被成功写入DMA
+                    match i2s_driver.write(chunk, BLOCK) {
+                        Ok(bytes_written) => {
+                            // 打印一些进度信息，方便调试
+                            info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                        }
+                        Err(e) => {
+                            // 如果在写入过程中出错，打印错误并跳出循环
+                            info!("I2S write error on a chunk: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Opus decode error: {:?}", e);
+                return;
             }
         }
     }

@@ -44,7 +44,7 @@ use xiaoxin_esp32::{
     led::WS2812RMT,
     wifi::wifi,
 };
-use xiaoxin_esp32::{Application, ApplicationState};
+use xiaoxin_esp32::{wifi, Application, ApplicationState};
 // 1. 引入 std::sync::mpsc
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -103,8 +103,14 @@ fn main() -> Result<()> {
     let es8311_i2c_proxy = bus_manager.acquire_i2c();
     let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
-    /* */
-    // init_wifi(peripherals, sysloop, &app_config)?;
+    let sysloop = EspSystemEventLoop::take()?;
+    let wifi = wifi::wifi(
+        "CU_liu81802",
+        "china-ops",
+        peripherals.modem,
+        sysloop.clone(),
+    )?;
+
     {
         // 2. 创建AXP173驱动实例
         let mut axp173 = Axp173::new(axp173_i2c_proxy);

@@ -24,7 +24,9 @@ experimental = ["esp-idf-svc/experimental"]
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = "0.51"
+# esp-idf-svc = "0.51"
+esp-idf-svc =  { version = "0.51", features = ["default","alloc"] }
+
 
 # esp-idf-hal = "0.45.2"
 esp-idf-hal = { version = "=0.45.2", features = ["rmt-legacy"] }
@@ -72,12 +74,15 @@ shared-bus = "0.3.1"
 futures = "0.3.31"
 thiserror = "2.0.16"
 crossbeam-channel = "0.5.15"
-
+serde_json = "1.0.145"
 
 [package.metadata.esp-idf-sys]
 extra_components = [
-    { component_dirs = [ "components/libopus" ], bindings_header = "components/libopus/bindings.h", bindings_module = "es32_component_opus" }
+    { component_dirs = [ "components/libopus" ], bindings_header = "components/libopus/bindings.h", bindings_module = "es32_component_opus" },
+    { remote_component = { name = "espressif/esp_websocket_client", version = "1.5.0" } },
 ]
 
 [build-dependencies]
 embuild = "0.33"
+
+ 

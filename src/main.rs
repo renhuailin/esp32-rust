@@ -1,6 +1,7 @@
+use core::pin::pin;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
 
 use anyhow::{anyhow, Error, Result};
@@ -11,6 +12,7 @@ use esp_idf_hal::i2s::config::{
     TdmSlotMask,
 };
 use esp_idf_hal::i2s::I2sTx;
+use esp_idf_hal::io::EspIOError;
 use esp_idf_hal::task::asynch::Notification;
 use esp_idf_hal::task::block_on;
 use esp_idf_hal::{
@@ -26,7 +28,10 @@ use esp_idf_hal::{
     rmt::RmtChannel,
     spi::SpiDriver,
 };
+use esp_idf_svc::eventloop::{EspEventLoop, EspSubscription, System};
 use esp_idf_svc::hal::prelude::*;
+use esp_idf_svc::tls::X509;
+use esp_idf_svc::wifi::WifiDeviceId;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
 use futures::{select, FutureExt};
@@ -37,6 +42,7 @@ use xiaoxin_esp32::audio::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::audio::{AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256};
 use xiaoxin_esp32::common::button;
+use xiaoxin_esp32::common::event::CustomEvent;
 use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
@@ -47,6 +53,12 @@ use xiaoxin_esp32::{
 use xiaoxin_esp32::{wifi, Application, ApplicationState};
 // 1. 引入 std::sync::mpsc
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+use esp_idf_svc::ws::client::{
+    EspWebSocketClient, EspWebSocketClientConfig, FrameType, WebSocketEvent, WebSocketEventType,
+};
+
+use serde_json::{json, Value};
 
 // 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
 pub type AudioBuffer = VecDeque<u8>;
@@ -104,12 +116,49 @@ fn main() -> Result<()> {
     let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
     let sysloop = EspSystemEventLoop::take()?;
-    let wifi = wifi::wifi(
-        "CU_liu81802",
-        "china-ops",
-        peripherals.modem,
-        sysloop.clone(),
-    )?;
+    info!("sys_loop taken successfully");
+
+    // let wifi = wifi::wifi(
+    //     "CU_liu81802",
+    //     "china-ops",
+    //     peripherals.modem,
+    //     sysloop.clone(),
+    // )?;
+
+    let wifi = wifi::wifi("rhl_OPPO", "china-ops", peripherals.modem, sysloop.clone())?;
+
+    let mac_address_bytes = wifi.get_mac(WifiDeviceId::Sta)?;
+    let mac_address_str = mac_address_bytes
+        .iter()
+        .map(|&b| format!("{:02X}", b)) // :02X 表示两位、大写的十六进制数，不足则补零
+        .collect::<Vec<String>>()
+        .join(":");
+
+    info!("格式化后的 MAC 地址是: {}", mac_address_str);
+
+    let sys_loop1: EspEventLoop<System> = sysloop.clone();
+    info!("testing websocket...");
+    let _sub = start_ws(mac_address_str.as_str(), sys_loop1).unwrap();
+
+    // info!("start a new thread to test websocket");
+
+    // const STACK_SIZE: usize = 8 * 1024; // 8 KB
+
+    // let thread_builder = thread::Builder::new()
+    //     .name("websocket_thread".into()) // 给线程起个名字，方便调试
+    //     .stack_size(STACK_SIZE);
+
+    // // 使用 builder 来创建线程
+    // thread_builder
+    //     .spawn(move || {
+    //         info!("testing websocket...");
+    //         test_ws(mac_address_str.as_str(), sys_loop1).unwrap();
+    //     })
+    //     .unwrap();
+    // thread::spawn(move || {
+    //     info!("testing websocket...");
+    //     test_ws(mac_address_str.as_str(), sys_loop1).unwrap();
+    // });
 
     {
         // 2. 创建AXP173驱动实例
@@ -350,10 +399,8 @@ fn main() -> Result<()> {
 
     once_timer.after(Duration::from_secs(2)).unwrap();
 
-    // log::info!("[Audio Task] play_audio start.");
-    // play_audio(i2s_clone_for_player.lock().unwrap());
-    // log::info!("[Audio Task] play_audio finished.");
-    play_p3_audio(i2s_clone_for_player.lock().unwrap());
+    // // 尝试播放P3音频 ，下面是已经成功的代码。
+    // play_p3_audio(i2s_clone_for_player.lock().unwrap());
 
     // 1. 创建一个用于发送控制命令的Channel
     let (cmd_sender, cmd_receiver) = unbounded::<AudioCommand>();
@@ -529,9 +576,11 @@ fn main() -> Result<()> {
 
     info!("Test complete. Entering infinite loop.");
 
-    // loop {
-    //     FreeRtos::delay_ms(1000);
-    // }
+    loop {
+        let _subscription = sysloop.subscribe::<CustomEvent, _>(|event| {
+            info!("[Subscribe callback] Got event: {event:?}");
+        })?;
+    }
     Ok(())
 }
 
@@ -688,5 +737,262 @@ fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {
         info!("Blue!");
         ws2812.set_pixel(rgb::RGB8::new(0, 0, 255)).unwrap();
         FreeRtos::delay_ms(1000);
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ExampleEvent {
+    Connected,
+    MessageReceived,
+    Closed,
+}
+
+fn test_ws(device_id: &str, sys_loop: EspEventLoop<System>) -> Result<(), Error> {
+    info!("in test_ws!");
+    // Connect websocket
+    let header = format!(
+        "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
+        device_id, device_id
+    );
+
+    let timeout = Duration::from_secs(10);
+    let (tx, rx) = mpsc::channel::<ExampleEvent>();
+    // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
+    let ws_url = "ws://192.168.1.62:8000/xiaozhi/v1/";
+
+    let config = EspWebSocketClientConfig {
+        headers: Some(header.as_str()),
+        ..Default::default()
+    };
+
+    info!("connecting to {}", ws_url);
+    // let mut client = EspWebSocketClient::new(ws_url, &config, timeout, move |event| {
+    //     // handle_event(&tx, event)
+    //     info!("handle event");
+    // })?;
+    // 将 EspWebSocketClient::new 的结果立即 Box 起来
+    // 这会将巨大的 client 对象分配到堆上
+    let sysloop = sys_loop.clone();
+    let client = Arc::new(Mutex::new(EspWebSocketClient::new(
+        ws_url,
+        &config,
+        timeout,
+        move |event| {
+            info!("handle event");
+            handle_event(&tx, event, sysloop.clone());
+        },
+    )?));
+
+    let client_for_subscription = client.clone();
+
+    esp_idf_svc::hal::task::block_on(pin!(async move {
+        // Fetch posted events with an async subscription as well
+        let mut subscription = sys_loop.subscribe_async::<CustomEvent>().unwrap();
+
+        loop {
+            let event = subscription.recv().await.unwrap();
+            info!("[Subscribe async] Got event: {event:?}");
+            match event {
+                CustomEvent::WebSocketConnected => {
+                    let mut client_guard = client_for_subscription.lock().unwrap();
+                    if client_guard.is_connected() {
+                        info!("client is connected");
+                        info!("create a hello message");
+                        let hello_message = HelloMessage::new().unwrap();
+                        info!("send hello message to server!");
+                        match client_guard.send(FrameType::Text(false), hello_message.as_bytes()) {
+                            Ok(_) => {
+                                info!("hello message sent!");
+                            }
+                            Err(e) => {
+                                info!("send hello message error: {:?}", e);
+                            }
+                        }
+                    } else {
+                        info!("client is not connected");
+                    }
+                }
+                CustomEvent::Start => todo!(),
+                CustomEvent::Tick(_) => todo!(),
+                CustomEvent::ServerHelloMessageReceived => todo!(),
+            }
+        }
+    }));
+
+    // thread::spawn(move || {
+    //     loop {
+    //         // 断开或连接失败后，等待一段时间再重试
+    //         thread::sleep(Duration::from_secs(1));
+    //     }
+    // });
+
+    Ok(())
+}
+
+fn start_ws(
+    device_id: &str,
+    sys_loop: EspEventLoop<System>,
+) -> Result<EspSubscription<'_, esp_idf_svc::eventloop::System>, Error> {
+    info!("in test_ws!");
+    // Connect websocket
+    let header = format!(
+        "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
+        device_id, device_id
+    );
+
+    let timeout = Duration::from_secs(10);
+    let (tx, rx) = mpsc::channel::<ExampleEvent>();
+    // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
+    let ws_url = "ws://192.168.211.80:8000/xiaozhi/v1/";
+
+    let config = EspWebSocketClientConfig {
+        headers: Some(header.as_str()),
+        ..Default::default()
+    };
+
+    info!("connecting to {}", ws_url);
+    // let mut client = EspWebSocketClient::new(ws_url, &config, timeout, move |event| {
+    //     // handle_event(&tx, event)
+    //     info!("handle event");
+    // })?;
+    // 将 EspWebSocketClient::new 的结果立即 Box 起来
+    // 这会将巨大的 client 对象分配到堆上
+    let sysloop = sys_loop.clone();
+    let client = Arc::new(Mutex::new(EspWebSocketClient::new(
+        ws_url,
+        &config,
+        timeout,
+        move |event| {
+            info!("handle event");
+            handle_event(&tx, event, sysloop.clone());
+        },
+    )?));
+
+    // 创建一个 MPSC channel，用于从事件处理器向后台线程发送命令
+    let (tx, rx) = mpsc::channel::<WsCommand>();
+
+    let subscription = sys_loop.subscribe::<CustomEvent, _>(move |event| {
+        info!("[Subscribe callback] Got event: {event:?}");
+        match event {
+            CustomEvent::WebSocketConnected => {
+                info!("Event handler: Notifying worker thread to send hello message.");
+                if let Err(e) = tx.send(WsCommand::SendHello) {
+                    info!("Failed to send command to worker thread: {:?}", e);
+                }
+            }
+            CustomEvent::Start => todo!(),
+            CustomEvent::ServerHelloMessageReceived => todo!(),
+            CustomEvent::Tick(_) => todo!(),
+        }
+    })?;
+
+    // / 定义线程栈大小，例如 8KB。这是一个可以调整的值。
+    const THREAD_STACK_SIZE: usize = 8 * 1024;
+
+    let thread_builder = thread::Builder::new()
+        .name("ws_worker".into()) // 给线程起个有意义的名字，方便调试
+        .stack_size(THREAD_STACK_SIZE);
+    // 启动后台工作线程
+    thread_builder.spawn(move || {
+        info!("WebSocket worker thread started.");
+        // 这个线程现在等待来自 channel 的命令
+        for command in rx {
+            info!("Worker thread received command: {:?}", command);
+            match command {
+                WsCommand::SendHello => {
+                    // 在这个线程（拥有自己的大栈空间）中执行重量级操作
+                    let mut client_guard = client.lock().unwrap();
+                    if client_guard.is_connected() {
+                        let hello_message = HelloMessage::new().unwrap();
+                        info!("Worker thread: Sending hello message...");
+                        match client_guard.send(FrameType::Text(false), hello_message.as_bytes()) {
+                            Ok(_) => info!("Worker thread: Hello message sent!"),
+                            Err(e) => info!("Worker thread: Send error: {:?}", e),
+                        }
+                    } else {
+                        info!("Worker thread: Client not connected, cannot send.");
+                    }
+                }
+            }
+        }
+        info!("WebSocket worker thread finished."); // channel 关闭后线程会结束
+    })?;
+
+    Ok(subscription)
+}
+#[derive(Debug)]
+enum WsCommand {
+    SendHello,
+    // 可以添加其他命令
+}
+fn handle_event(
+    tx: &mpsc::Sender<ExampleEvent>,
+    event: &Result<WebSocketEvent, EspIOError>,
+    sys_loop: EspEventLoop<System>,
+) {
+    if let Ok(event) = event {
+        match event.event_type {
+            WebSocketEventType::BeforeConnect => {
+                info!("Websocket before connect");
+            }
+            WebSocketEventType::Connected => {
+                info!("Websocket connected");
+                // tx.send(ExampleEvent::Connected).ok();
+                sys_loop
+                    .post::<CustomEvent>(&CustomEvent::WebSocketConnected, delay::BLOCK)
+                    .unwrap();
+            }
+            WebSocketEventType::Disconnected => {
+                info!("Websocket disconnected");
+            }
+            WebSocketEventType::Close(reason) => {
+                info!("Websocket close, reason: {reason:?}");
+            }
+            WebSocketEventType::Closed => {
+                info!("Websocket closed");
+                tx.send(ExampleEvent::Closed).ok();
+            }
+            WebSocketEventType::Text(text) => {
+                info!("Websocket recv, text: {text}");
+                if text == "Hello, World!" {
+                    tx.send(ExampleEvent::MessageReceived).ok();
+                }
+            }
+            WebSocketEventType::Binary(binary) => {
+                info!("Websocket recv, binary: {binary:?}");
+            }
+            WebSocketEventType::Ping => {
+                info!("Websocket ping");
+            }
+            WebSocketEventType::Pong => {
+                info!("Websocket pong");
+            }
+        }
+    }
+}
+
+struct HelloMessage;
+
+impl HelloMessage {
+    fn new() -> Result<String> {
+        let body = r#"{
+    "type": "hello",
+    "version": 1,
+    "transport": "websocket",
+    "features": {
+        "mcp": true
+    },
+    "audio_params": {
+        "format": "opus",
+        "sample_rate": 16000,
+        "channels": 1,
+        "frame_duration": 60
+    }
+}"#;
+        let mut hello: Value = serde_json::from_str(body)?;
+        // hello["feature"] = json!({ "an": "object" });
+        println!("{:?}", hello);
+        println!("{:?}", serde_json::to_string(&hello));
+        Ok(serde_json::to_string(&hello)?)
     }
 }

@@ -10,8 +10,9 @@ pub struct OpusAudioDecoder {
 
 impl OpusAudioDecoder {
     pub fn new(sample_rate: i32, channels: i32) -> Result<Self> {
-        let error = std::ptr::null_mut();
-        let decoder = unsafe { opus_decoder_create(sample_rate, channels, error) };
+        // let error = std::ptr::null_mut();
+        let mut error: i32 = 0;
+        let decoder = unsafe { opus_decoder_create(sample_rate, channels, &mut error) };
 
         if decoder.is_null() {
             return Err(anyhow::anyhow!(
@@ -67,9 +68,11 @@ impl OpusAudioDecoder {
 
 impl Drop for OpusAudioDecoder {
     fn drop(&mut self) {
-        println!("Destroying opus audio decoder");
-        unsafe {
-            opus_decoder_destroy(self.decoder);
-        };
+        if !self.decoder.is_null() {
+            println!("Destroying opus audio decoder");
+            unsafe {
+                opus_decoder_destroy(self.decoder);
+            };
+        }
     }
 }

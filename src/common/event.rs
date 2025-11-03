@@ -8,10 +8,11 @@ pub const WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT: u32 = 1;
 
 #[derive(Copy, Clone, Debug)]
 pub enum CustomEvent {
-    Start,
+    // Start,
     WebSocketConnected,
     ServerHelloMessageReceived, // 收到服务器返回的hello消息
-    Tick(u32),
+    SendAudioEvent,             // 发送音频数据事件
+                                // Tick(u32),
 }
 unsafe impl EspEventSource for CustomEvent {
     #[allow(clippy::manual_c_str_literals)]

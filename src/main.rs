@@ -40,8 +40,13 @@ use mipidsi::error;
 use shared_bus::BusManagerSimple;
 use xiaoxin_esp32::audio::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
-use xiaoxin_esp32::audio::{AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256};
+use xiaoxin_esp32::audio::opus::encoder::OpusAudioEncoder;
+use xiaoxin_esp32::audio::{
+    AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256, MAX_AUDIO_PACKETS_IN_QUEUE,
+    OPUS_FRAME_DURATION_MS,
+};
 use xiaoxin_esp32::common::button;
+use xiaoxin_esp32::common::converter::bytes_to_i16_slice;
 use xiaoxin_esp32::common::event::CustomEvent;
 use xiaoxin_esp32::{
     audio,
@@ -52,7 +57,7 @@ use xiaoxin_esp32::{
 };
 use xiaoxin_esp32::{wifi, Application, ApplicationState};
 // 1. 引入 std::sync::mpsc
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
 
 use esp_idf_svc::ws::client::{
     EspWebSocketClient, EspWebSocketClientConfig, FrameType, WebSocketEvent, WebSocketEventType,
@@ -118,14 +123,14 @@ fn main() -> Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     info!("sys_loop taken successfully");
 
-    // let wifi = wifi::wifi(
-    //     "CU_liu81802",
-    //     "china-ops",
-    //     peripherals.modem,
-    //     sysloop.clone(),
-    // )?;
+    let wifi = wifi::wifi(
+        "CU_liu81802",
+        "china-ops",
+        peripherals.modem,
+        sysloop.clone(),
+    )?;
 
-    let wifi = wifi::wifi("rhl_OPPO", "china-ops", peripherals.modem, sysloop.clone())?;
+    // let wifi = wifi::wifi("rhl_OPPO", "china-ops", peripherals.modem, sysloop.clone())?;
 
     let mac_address_bytes = wifi.get_mac(WifiDeviceId::Sta)?;
     let mac_address_str = mac_address_bytes
@@ -136,9 +141,19 @@ fn main() -> Result<()> {
 
     info!("格式化后的 MAC 地址是: {}", mac_address_str);
 
+    //待发送的音频队列
+    let audio_packet_queue = Arc::new(Mutex::new(VecDeque::<AudioStreamPacket>::with_capacity(
+        MAX_AUDIO_PACKETS_IN_QUEUE,
+    )));
+
     let sys_loop1: EspEventLoop<System> = sysloop.clone();
     info!("testing websocket...");
-    let _sub = start_ws(mac_address_str.as_str(), sys_loop1).unwrap();
+    let _sub = start_ws(
+        mac_address_str.as_str(),
+        sys_loop1,
+        Arc::clone(&audio_packet_queue),
+    )
+    .unwrap();
 
     // info!("start a new thread to test websocket");
 
@@ -236,12 +251,12 @@ fn main() -> Result<()> {
         let audio_decoder = OpusAudioDecoder::new(48000, 1).unwrap();
     }
 
-    //关闭背光
+    // //关闭背光
 
     // // show led demo
     // let led = pins.gpio38;
     // let channel: esp_idf_hal::rmt::CHANNEL0 = peripherals.rmt.channel0;
-    // led_demo(led.into(), channel)
+    // led_demo(led.into(), channel);
 
     /*
     // 初始化ILI9341
@@ -416,8 +431,27 @@ fn main() -> Result<()> {
     // let notifier = Arc::clone(&notification);
     // let notifier2 = Arc::clone(&notification);
 
-    thread::spawn(move || {
+    let sys_loop = sysloop.clone();
+    // 启动一个线程来处理音频事件
+
+    const THREAD_STACK_SIZE: usize = 48 * 1024;
+    let thread_builder = thread::Builder::new()
+        .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
+        .stack_size(THREAD_STACK_SIZE);
+    // 启动后台工作线程
+    thread_builder.spawn(move || {
         let mut is_recording = false;
+
+        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let channels = 2; //# 单声道
+        info!("create opus encoder");
+        let mut opus_encoder = OpusAudioEncoder::new(
+            sample_rate,
+            channels,
+            OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+        )
+        .unwrap();
+
         loop {
             // a. 检查是否有新的控制命令进来 (非阻塞)
             if let Ok(command) = cmd_receiver.try_recv() {
@@ -465,27 +499,6 @@ fn main() -> Result<()> {
                             log::info!("[Audio Task] Playback finished.");
                             buffer_guard.clear(); // 清空缓冲区
                         }
-
-                        // // --- 执行播放逻辑 ---
-                        // let playback_data: Vec<u8>;
-                        // {
-                        //     let mut buffer_guard = state_clone.buffer.lock().unwrap();
-                        //     playback_data = buffer_guard.iter().cloned().collect();
-                        //     buffer_guard.clear();
-                        // }
-
-                        // if !playback_data.is_empty() {
-                        //     log::info!(
-                        //         "[Audio Task] Playing back {} bytes...",
-                        //         playback_data.len()
-                        //     );
-                        //     let mut i2s_guard = i2s_clone.lock().unwrap();
-                        //     if let Err(e) = i2s_guard.write_all(&playback_data, BLOCK) {
-                        //         log::error!("[Audio Task] Playback failed: {:?}", e);
-                        //     } else {
-                        //         log::info!("[Audio Task] Playback finished.");
-                        //     }
-                        // }
                     }
                 }
             }
@@ -498,11 +511,53 @@ fn main() -> Result<()> {
                 if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
                     info!("bytes read from I2S : {} ", bytes_read);
                     if bytes_read > 0 {
-                        state_clone
-                            .buffer
-                            .lock()
-                            .unwrap()
-                            .extend(&read_buffer[..bytes_read]);
+                        // state_clone
+                        //     .buffer
+                        //     .lock()
+                        //     .unwrap()
+                        //     .extend(&read_buffer[..bytes_read]);
+
+                        info!("convert vec to i16 slice");
+                        // 因为录音数据是8位PCM数据，opus_encoder 需要16位的 Vec,所以需转换下。
+                        let bytes_to_i16_result =
+                            bytes_to_i16_slice(&read_buffer[..bytes_read]).unwrap();
+
+                        info!("encode PCM to Opus");
+                        let audio_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>> =
+                            Arc::clone(&audio_packet_queue);
+
+                        let sys_loop_poster = sys_loop.clone();
+                        // encode PCM to Opus
+                        opus_encoder
+                            .encode(bytes_to_i16_result.to_vec(), move |opus_data| {
+                                // 构建一个音频数据包
+                                let packet = AudioStreamPacket {
+                                    sample_rate: 16000,
+                                    frame_duration: 60,
+                                    timestamp: 0,
+                                    payload: opus_data,
+                                };
+
+                                let mut queue = audio_queue.lock().unwrap();
+
+                                // --- 核心逻辑在这里 ---
+                                // 2. 检查队列是否已满
+                                if queue.len() == queue.capacity() {
+                                    // 3. 如果已满，从头部弹出一个（最旧的）元素，为新元素腾出空间
+                                    let _discarded_packet = queue.pop_front();
+                                    info!("[生产者] 队列已满！丢弃最旧的数据块");
+                                }
+
+                                // 4. 将新元素推入队列的尾部
+                                queue.push_back(packet);
+
+                                // 5. 唤醒消费者线程
+                                info!("唤醒消费者线程 send AudioEvent");
+                                sys_loop_poster
+                                    .post::<CustomEvent>(&CustomEvent::SendAudioEvent, delay::BLOCK)
+                                    .unwrap();
+                            })
+                            .unwrap();
                     }
                 } else {
                     info!("I2Stream: Error reading I2S");
@@ -512,7 +567,7 @@ fn main() -> Result<()> {
                 thread::sleep(Duration::from_millis(20));
             }
         }
-    });
+    })?;
     log::info!("Background audio processing task started.");
 
     // handle.join().unwrap();
@@ -536,7 +591,7 @@ fn main() -> Result<()> {
 
     let mut app = Application::new();
 
-    info!("Waiting for button press...");
+    info!("开始处理的按钮事件...");
     block_on(async move {
         // println!("Buttons initialized. Waiting for press...");
         let mut speaking = false;
@@ -548,13 +603,6 @@ fn main() -> Result<()> {
 
                         println!("touch_button 1 pressed!");
                         cmd_sender.send(AudioCommand::StartRecording).unwrap();
-
-                        // let mut i2s_guard = i2s_clone_for_player.lock().unwrap();
-
-                        // play_audio(i2s_guard);
-                        // log::info!("[Audio Task] play_audio finished.");
-
-
                         speaking = true;
                         touch_button.enable_interrupt().unwrap();
                     } else {
@@ -577,9 +625,7 @@ fn main() -> Result<()> {
     info!("Test complete. Entering infinite loop.");
 
     loop {
-        let _subscription = sysloop.subscribe::<CustomEvent, _>(|event| {
-            info!("[Subscribe callback] Got event: {event:?}");
-        })?;
+        thread::sleep(Duration::from_millis(1000));
     }
     Ok(())
 }
@@ -619,9 +665,6 @@ fn play_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     }
 }
 
-///
-/// 播放p3格式的音频文件. <br/>
-/// p3格式: [1字节类型, 1字节保留, 2字节长度, Opus数据]
 ///  
 fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     const P3_DATA: &'static [u8] = include_bytes!("../assets/activation.p3");
@@ -747,91 +790,10 @@ enum ExampleEvent {
     Closed,
 }
 
-fn test_ws(device_id: &str, sys_loop: EspEventLoop<System>) -> Result<(), Error> {
-    info!("in test_ws!");
-    // Connect websocket
-    let header = format!(
-        "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
-        device_id, device_id
-    );
-
-    let timeout = Duration::from_secs(10);
-    let (tx, rx) = mpsc::channel::<ExampleEvent>();
-    // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
-    let ws_url = "ws://192.168.1.62:8000/xiaozhi/v1/";
-
-    let config = EspWebSocketClientConfig {
-        headers: Some(header.as_str()),
-        ..Default::default()
-    };
-
-    info!("connecting to {}", ws_url);
-    // let mut client = EspWebSocketClient::new(ws_url, &config, timeout, move |event| {
-    //     // handle_event(&tx, event)
-    //     info!("handle event");
-    // })?;
-    // 将 EspWebSocketClient::new 的结果立即 Box 起来
-    // 这会将巨大的 client 对象分配到堆上
-    let sysloop = sys_loop.clone();
-    let client = Arc::new(Mutex::new(EspWebSocketClient::new(
-        ws_url,
-        &config,
-        timeout,
-        move |event| {
-            info!("handle event");
-            handle_event(&tx, event, sysloop.clone());
-        },
-    )?));
-
-    let client_for_subscription = client.clone();
-
-    esp_idf_svc::hal::task::block_on(pin!(async move {
-        // Fetch posted events with an async subscription as well
-        let mut subscription = sys_loop.subscribe_async::<CustomEvent>().unwrap();
-
-        loop {
-            let event = subscription.recv().await.unwrap();
-            info!("[Subscribe async] Got event: {event:?}");
-            match event {
-                CustomEvent::WebSocketConnected => {
-                    let mut client_guard = client_for_subscription.lock().unwrap();
-                    if client_guard.is_connected() {
-                        info!("client is connected");
-                        info!("create a hello message");
-                        let hello_message = HelloMessage::new().unwrap();
-                        info!("send hello message to server!");
-                        match client_guard.send(FrameType::Text(false), hello_message.as_bytes()) {
-                            Ok(_) => {
-                                info!("hello message sent!");
-                            }
-                            Err(e) => {
-                                info!("send hello message error: {:?}", e);
-                            }
-                        }
-                    } else {
-                        info!("client is not connected");
-                    }
-                }
-                CustomEvent::Start => todo!(),
-                CustomEvent::Tick(_) => todo!(),
-                CustomEvent::ServerHelloMessageReceived => todo!(),
-            }
-        }
-    }));
-
-    // thread::spawn(move || {
-    //     loop {
-    //         // 断开或连接失败后，等待一段时间再重试
-    //         thread::sleep(Duration::from_secs(1));
-    //     }
-    // });
-
-    Ok(())
-}
-
 fn start_ws(
     device_id: &str,
     sys_loop: EspEventLoop<System>,
+    audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
 ) -> Result<EspSubscription<'_, esp_idf_svc::eventloop::System>, Error> {
     info!("in test_ws!");
     // Connect websocket
@@ -843,7 +805,7 @@ fn start_ws(
     let timeout = Duration::from_secs(10);
     let (tx, rx) = mpsc::channel::<ExampleEvent>();
     // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
-    let ws_url = "ws://192.168.211.80:8000/xiaozhi/v1/";
+    let ws_url = "ws://192.168.1.252:8000/xiaozhi/v1/";
 
     let config = EspWebSocketClientConfig {
         headers: Some(header.as_str()),
@@ -880,9 +842,18 @@ fn start_ws(
                     info!("Failed to send command to worker thread: {:?}", e);
                 }
             }
-            CustomEvent::Start => todo!(),
-            CustomEvent::ServerHelloMessageReceived => todo!(),
-            CustomEvent::Tick(_) => todo!(),
+            CustomEvent::SendAudioEvent => {
+                // 获取音频数据包
+                let audio_packet = audio_packet_queue.lock().unwrap().pop_front();
+
+                if let Some(packet) = audio_packet {
+                    info!("收到音频数据包. send WsCommand::SendAudioEvent ");
+                    if let Err(e) = tx.send(WsCommand::SendAudioEvent(packet)) {
+                        info!("Failed to send command to worker thread: {:?}", e);
+                    }
+                }
+            }
+            _ => {}
         }
     })?;
 
@@ -913,6 +884,20 @@ fn start_ws(
                         info!("Worker thread: Client not connected, cannot send.");
                     }
                 }
+                WsCommand::SendAudioEvent(audio_stream_packet) => {
+                    info!("收到WsCommand::SendAudioEvent. 准备使用 ws 发送数据包. ");
+                    let mut client_guard = client.lock().unwrap();
+                    if client_guard.is_connected() {
+                        match client_guard
+                            .send(FrameType::Binary(false), &audio_stream_packet.payload)
+                        {
+                            Ok(_) => info!("Worker thread: Audio packet sent!"),
+                            Err(e) => info!("Worker thread: Send error: {:?}", e),
+                        }
+                    } else {
+                        info!("Worker thread: Client not connected, cannot send.");
+                    }
+                }
             }
         }
         info!("WebSocket worker thread finished."); // channel 关闭后线程会结束
@@ -923,7 +908,7 @@ fn start_ws(
 #[derive(Debug)]
 enum WsCommand {
     SendHello,
-    // 可以添加其他命令
+    SendAudioEvent(AudioStreamPacket), // 可以添加其他命令
 }
 fn handle_event(
     tx: &mpsc::Sender<ExampleEvent>,

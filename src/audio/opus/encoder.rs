@@ -60,7 +60,7 @@ impl OpusAudioEncoder {
     //     Ok(bits::decode_bits(opus_packet_data))
     // }
 
-    pub fn encode<F>(&mut self, mut pcm: Vec<i16>, mut handler: F) -> Result<()>
+    pub fn encode<F>(&mut self, mut pcm: Vec<i16>, handler: &mut F) -> Result<()>
     where
         F: FnMut(Vec<u8>),
     {
@@ -106,9 +106,10 @@ impl OpusAudioEncoder {
                 // 调用 FFI 函数
                 opus_encode(
                     self.encoder,
-                    self.in_buffer.as_ptr(), // 输入 PCM 数据的裸指针
-                    // data.as_ptr(), // 输入 PCM 数据的裸指针
-                    self.frame_size as i32,
+                    // self.in_buffer.as_ptr(), // 输入 PCM 数据的裸指针
+                    data.as_ptr(), // 输入 PCM 数据的裸指针
+                    // self.frame_size as i32,
+                    (data.len() / 2) as i32,
                     // 960,
                     opus_ptr,
                     MAX_OPUS_PACKET_SIZE as i32,
@@ -134,14 +135,15 @@ impl OpusAudioEncoder {
             handler(opus_out);
 
             // --- 从输入缓冲区移除已处理的数据 ---
-            // self.in_buffer.drain(0..self.frame_size);
+            self.in_buffer.drain(0..self.frame_size);
+
             // drain() 会返回一个迭代器，更高效的方式是直接操作底层数据
             // 但 drain 对于 Vec 来说已经很高效了
             // 另一种高效的方法是 `Vec::remove` in a loop, but `drain` is more idiomatic.
             // A potentially faster but more complex way:
-            let remaining_len = self.in_buffer.len() - self.frame_size;
-            self.in_buffer.copy_within(self.frame_size.., 0);
-            self.in_buffer.truncate(remaining_len);
+            // let remaining_len = self.in_buffer.len() - self.frame_size;
+            // self.in_buffer.copy_within(self.frame_size.., 0);
+            // self.in_buffer.truncate(remaining_len);
         }
 
         Ok(())

@@ -4,6 +4,7 @@ pub mod common;
 // pub mod i2s;
 pub mod lcd;
 pub mod led;
+pub mod protocols;
 pub mod utils;
 pub mod wifi;
 

@@ -4,17 +4,19 @@ use esp_idf_svc::eventloop::{
     EspEvent, EspEventDeserializer, EspEventPostData, EspEventSerializer, EspEventSource,
 };
 
+use crate::audio::AudioStreamPacket;
+
 pub const WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT: u32 = 1;
 
 #[derive(Copy, Clone, Debug)]
-pub enum CustomEvent {
+pub enum WsEvent {
     // Start,
     WebSocketConnected,
     ServerHelloMessageReceived, // 收到服务器返回的hello消息
     SendAudioEvent,             // 发送音频数据事件
                                 // Tick(u32),
 }
-unsafe impl EspEventSource for CustomEvent {
+unsafe impl EspEventSource for WsEvent {
     #[allow(clippy::manual_c_str_literals)]
     fn source() -> Option<&'static CStr> {
         // String should be unique across the whole project and ESP IDF
@@ -22,8 +24,8 @@ unsafe impl EspEventSource for CustomEvent {
     }
 }
 
-impl EspEventSerializer for CustomEvent {
-    type Data<'a> = CustomEvent;
+impl EspEventSerializer for WsEvent {
+    type Data<'a> = WsEvent;
 
     fn serialize<F, R>(event: &Self::Data<'_>, f: F) -> R
     where
@@ -34,11 +36,23 @@ impl EspEventSerializer for CustomEvent {
     }
 }
 
-impl EspEventDeserializer for CustomEvent {
-    type Data<'a> = CustomEvent;
+impl EspEventDeserializer for WsEvent {
+    type Data<'a> = WsEvent;
 
     fn deserialize<'a>(data: &EspEvent<'a>) -> Self::Data<'a> {
         // Just as easy as serializing
-        *unsafe { data.as_payload::<CustomEvent>() }
+        *unsafe { data.as_payload::<WsEvent>() }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum XzEvent {
+    // SpeakButtonPressed,
+    OpenAudioChannel,
+    CloseAudioChannel,
+    WebSocketConnected,
+    ServerHelloMessageReceived, // 收到服务器返回的hello消息
+    SendAudioEvent,             // 发送音频数据事件
+    AudioDataReceived(AudioStreamPacket),
+    WebsocketTextMessageReceived(String),
 }

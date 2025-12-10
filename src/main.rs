@@ -149,10 +149,10 @@ fn main() -> Result<()> {
         MAX_AUDIO_PACKETS_IN_QUEUE,
     )));
 
-    //待发送的音频data队列
-    let audio_data_queue: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(
-        VecDeque::<u8>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE * 512),
-    ));
+    // //待发送的音频data队列
+    // let audio_send_queue: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(
+    //     VecDeque::<u8>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE * 512),
+    // ));
 
     let sys_loop1: EspEventLoop<System> = sysloop.clone();
     info!("testing websocket...");
@@ -444,7 +444,8 @@ fn main() -> Result<()> {
 
     let tx3 = tx.clone();
 
-    let audio_data_queue1 = Arc::clone(&audio_data_queue);
+    let audio_send_queue = Arc::clone(&audio_packet_queue);
+
     // 启动后台工作线程
     thread_builder.spawn(move || {
         let mut is_recording = false;
@@ -459,7 +460,7 @@ fn main() -> Result<()> {
         )
         .unwrap();
 
-        let mut local_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        // let mut local_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
 
         // let local_opus_decoder = Arc::new(Mutex::new(
         //     OpusAudioDecoder::new(sample_rate, channels).unwrap(),
@@ -480,7 +481,7 @@ fn main() -> Result<()> {
 
             // info!("从 es7210 中读取的[u8]PCM数据 = {:?}\n从 es7210 中读取并转换为[i16]的PCM数据 = {:?}\n本地解码后的PCM数据 = {:?}", &pcmu8, &bytes_to_i16_result, &decode_result);
 
-            /*
+            /**/
             // 构建一个音频数据包
             let packet = AudioStreamPacket {
                 sample_rate: 16000,
@@ -489,55 +490,24 @@ fn main() -> Result<()> {
                 payload: opus_data,
             };
 
-            let mut queue = audio_queue.lock().unwrap();
+            let mut queue = audio_send_queue.lock().unwrap();
 
             // --- 核心逻辑在这里 ---
             // 2. 检查队列是否已满
-            if queue.len() == queue.capacity() {
-                // 3. 如果已满，从头部弹出一个（最旧的）元素，为新元素腾出空间
-                let _discarded_packet = queue.pop_front();
-                info!("[生产者] 队列已满！丢弃最旧的数据块");
+            if queue.len() >= MAX_AUDIO_PACKETS_IN_QUEUE {
+                warn!("Too many audio packets in queue, drop the newest packet");
+                return;
             }
 
             // 4. 将新元素推入队列的尾部
             queue.push_back(packet);
-            */
 
-            // // 2. 检查队列是否已满
-            // if queue.len() == queue.capacity() {
-            //     // 3. 如果已满，从头部弹出一个（最旧的）元素，为新元素腾出空间
-            //     let _discarded_packet = queue.pop_front();
-            //     info!("[生产者] 队列已满！丢弃最旧的数据块");
-            // }
-
-            // // 4. 将新元素推入队列的尾部
-            // queue.push_back(packet);
-
-            info!("[生产者] audio_queue.lock().unwrap()...");
-
-            let mut queue = audio_data_queue1.lock().unwrap();
-
-            info!("[生产者] 判断是否需要丢弃数据块...");
-            const MAX_SIZE: usize = MAX_AUDIO_PACKETS_IN_QUEUE * 512;
-            if queue.len() + opus_data.len() >= MAX_SIZE {
-                let drain_before = queue.len() + opus_data.len() - MAX_SIZE;
-                let _ = queue.drain(..drain_before).collect::<VecDeque<_>>();
-                warn!("[生产者] 队列已满，丢弃最旧的{}个字节！", drain_before);
-                // println!("{:?}", deque);
-                // queue.extend(opus_data);
-                // println!("{:?}", deque);
-                // println!("deque.len() = {}", deque.len());
-            }
-            info!("[生产者] 添加数据块到队列中...");
-            queue.extend(opus_data);
             // 5. 唤醒消费者线程
             info!("唤醒消费者线程 send AudioEvent");
-            // sys_loop
-            //     .post::<WsEvent>(&WsEvent::SendAudioEvent, delay::BLOCK)
-            //     .unwrap();
+
             tx3.send(XzEvent::SendAudioEvent).unwrap();
 
-            info!("唤醒消费者线程 - 完成 ！");
+            // info!("唤醒消费者线程 - 完成 ！");
         };
 
         loop {
@@ -597,7 +567,7 @@ fn main() -> Result<()> {
                 let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
                 let mut i2s_guard = i2s_clone.lock().unwrap();
                 if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
-                    info!("bytes read from I2S : {} ", bytes_read);
+                    // info!("bytes read from I2S : {} ", bytes_read);
                     if bytes_read > 0 {
                         // info!(
                         //     "从 es7210 中读取的[u8]PCM数据 = {:?}",
@@ -605,7 +575,7 @@ fn main() -> Result<()> {
                         // );
                         let pcmu8 = &read_buffer[..bytes_read];
 
-                        info!("convert vec to i16 slice");
+                        // info!("convert vec to i16 slice");
 
                         // 因为录音数据是8位PCM数据，opus_encoder 需要16位的 Vec,所以需转换下。
                         let bytes_to_i16_result =
@@ -614,7 +584,7 @@ fn main() -> Result<()> {
                         //     "从 es7210 中读取并转换为[i16]的PCM数据 = {:?}",
                         //     &bytes_to_i16_result
                         // );
-                        info!("encode PCM to Opus");
+                        // info!("encode PCM to Opus");
                         // let audio_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>> =
                         //     Arc::clone(&audio_packet_queue);
 
@@ -704,6 +674,7 @@ fn main() -> Result<()> {
                 } else {
                     info!("I2Stream: Error reading I2S");
                 }
+                thread::sleep(Duration::from_millis(20));
             } else {
                 // 如果不录音，就短暂休眠，避免CPU空转
                 thread::sleep(Duration::from_millis(20));
@@ -745,8 +716,10 @@ fn main() -> Result<()> {
 
     let ws_client_clone: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
 
+    let ws_client_clone1: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
     let tx2 = tx.clone();
 
+    let cmd_sender1 = cmd_sender.clone();
     // 创建一个后台线程，用于处理按钮事件
     thread::spawn(move || {
         info!("开始处理的按钮事件...");
@@ -758,12 +731,13 @@ fn main() -> Result<()> {
                     _ = touch_button.wait().fuse()  => {
 
                         if !speaking {
-                            // if  !ws_client_clone.lock().unwrap().is_connected() {
-                            //     ws_client_clone.lock().unwrap().open_audio_channel().unwrap();
-                            // }
-
                             println!("touch_button 1 pressed!");
-                            tx2.send(XzEvent::OpenAudioChannel).unwrap();
+
+                            if  !ws_client_clone1.lock().unwrap().is_connected() {
+                                tx2.send(XzEvent::OpenAudioChannel).unwrap();
+                            }
+
+                            cmd_sender1.send(AudioCommand::StartRecording).unwrap();
 
                             speaking = true;
                             touch_button.enable_interrupt().unwrap();
@@ -772,9 +746,9 @@ fn main() -> Result<()> {
                             //     ws_client_clone.lock().unwrap().close_audio_channel().unwrap();
                             // }
                             println!("is speaking !");
-                            tx2.send(XzEvent::CloseAudioChannel).unwrap();
+                            // tx2.send(XzEvent::CloseAudioChannel).unwrap();
                             // 发送“停止并播放”命令
-
+                            cmd_sender1.send(AudioCommand::StopAndPlayback).unwrap();
                             speaking = false;
                             log::info!("==> Action: Playback Recorded Audio");
                             touch_button.enable_interrupt().unwrap();
@@ -782,25 +756,39 @@ fn main() -> Result<()> {
                     }
                     _ = volume_button.wait().fuse() => {
                         println!("volume_button 2 pressed!");
+                        tx2.send(XzEvent::CloseAudioChannel).unwrap();
                         volume_button.enable_interrupt().unwrap();
                     },
                 }
+                thread::sleep(Duration::from_millis(20));
             }
         });
     });
 
-    let audio_data_queue2 = Arc::clone(&audio_data_queue);
+    let audio_data_queue2 = Arc::clone(&audio_packet_queue);
+
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+    let mut local_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+
+    // let local_opus_decoder = Arc::new(Mutex::new(
+    //     OpusAudioDecoder::new(sample_rate, channels).unwrap(),
+    // ));
     info!("开始监听 websocket 事件");
     for event in rx {
         match event {
             XzEvent::OpenAudioChannel => {
                 let ws_client_clone: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
                 if !ws_client_clone.lock().unwrap().is_connected() {
-                    ws_client_clone
-                        .lock()
-                        .unwrap()
-                        .open_audio_channel()
-                        .unwrap();
+                    info!("websocket 未连接，开始尝试连接");
+                    match ws_client_clone.lock().unwrap().open_audio_channel() {
+                        Ok(_) => {
+                            info!("websocket 连接成功");
+                        }
+                        Err(error) => {
+                            error!("websocket 连接失败: {}", error);
+                        }
+                    }
                 }
                 cmd_sender.send(AudioCommand::StartRecording).unwrap();
             }
@@ -824,20 +812,20 @@ fn main() -> Result<()> {
             }
             XzEvent::ServerHelloMessageReceived => todo!(),
             XzEvent::SendAudioEvent => {
-                if audio_data_queue2.lock().unwrap().len() >= 512 {
-                    let drained = audio_data_queue2
-                        .lock()
-                        .unwrap()
-                        .drain(..512)
-                        .collect::<VecDeque<_>>();
-                    // println!("{:?}", drained);
-
-                    let packet = AudioStreamPacket {
-                        sample_rate: 16000,
-                        frame_duration: 60,
-                        timestamp: 0,
-                        payload: drained.into(),
-                    };
+                if let Some(packet) = audio_data_queue2.lock().unwrap().pop_front() {
+                    //尝试本地解码
+                    // let opus_data = packet.payload.clone();
+                    // // println!("待发送的 opus data : {:?}", opus_data);
+                    // let decode_result = local_decoder.decode(&opus_data);
+                    // match decode_result {
+                    //     Ok(_) => {
+                    //         info!("本地解码成功！");
+                    //         // info!("从 es7210 中读取的[u8]PCM数据 = {:?}\n从 es7210 中读取并转换为[i16]的PCM数据 = {:?}\n本地解码后的PCM数据 = {:?}", &pcmu8, &bytes_to_i16_result, &decode_result);
+                    //     }
+                    //     Err(_) => {
+                    //         error!("本地解码失败！");
+                    //     }
+                    // }
 
                     let ws_client_clone1: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
                     let mut client = ws_client_clone1.lock().unwrap();

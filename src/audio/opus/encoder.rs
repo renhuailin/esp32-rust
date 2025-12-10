@@ -72,23 +72,23 @@ impl OpusAudioEncoder {
         //     anyhow!("Audio encoder is not configured")
         // })?;
 
-        info!("add pcm to buffer...");
+        // info!("add pcm to buffer...");
 
         // --- 这里是 `in_buffer_` 逻辑的 Rust 实现 ---
         // 直接使用 `append`，它会移动 pcm 的所有元素，并在 pcm 变空后返回。
         // 这同时处理了 in_buffer 为空和不为空两种情况，更简洁。
         self.in_buffer.append(&mut pcm);
 
-        info!(
-            "in_buffer.len= {}, self.frame_size = {}",
-            self.in_buffer.len(),
-            self.frame_size
-        );
+        // info!(
+        //     "in_buffer.len= {}, self.frame_size = {}",
+        //     self.in_buffer.len(),
+        //     self.frame_size
+        // );
 
         // --- 编码循环 ---
         // 只要缓冲区里的数据足够一个帧，就继续编码
         while self.in_buffer.len() >= self.frame_size {
-            info!("开始编码pcm...");
+            // info!("开始编码pcm...");
 
             // 创建一个足够大的输出缓冲区
             // 使用 Vec<u8> 并设置容量，比栈上的 C-style 数组更安全
@@ -100,7 +100,7 @@ impl OpusAudioEncoder {
             if self.encoder.is_null() {
                 return Err(anyhow!("Audio encoder is not configured"));
             }
-            info!("开始调用unsafe opus_encode");
+            // info!("开始调用unsafe opus_encode");
             let data: &[i16] = &self.in_buffer[..self.frame_size];
             let ret = unsafe {
                 // 调用 FFI 函数
@@ -115,7 +115,7 @@ impl OpusAudioEncoder {
                     MAX_OPUS_PACKET_SIZE as i32,
                 )
             };
-            info!("调用unsafe opus_encode 结束");
+            // info!("调用unsafe opus_encode 结束");
             if ret < 0 {
                 let err_msg = format!("Failed to encode audio, error code: {}", ret);
                 error!("{}", err_msg);
@@ -131,7 +131,7 @@ impl OpusAudioEncoder {
             }
 
             // 调用 handler 闭包，将编码后的数据的所有权移交给它
-            info!("调用 handler 闭包，将编码后的数据的所有权移交给它");
+            // info!("调用 handler 闭包，将编码后的数据的所有权移交给它");
             handler(opus_out);
 
             // --- 从输入缓冲区移除已处理的数据 ---

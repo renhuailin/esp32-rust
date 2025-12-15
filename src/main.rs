@@ -38,6 +38,7 @@ use futures::{select, FutureExt};
 use log::{error, info, warn};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
+use xiaoxin_esp32::application::{Application, ApplicationState};
 use xiaoxin_esp32::audio::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::audio::opus::encoder::OpusAudioEncoder;
@@ -49,8 +50,10 @@ use xiaoxin_esp32::common::button;
 use xiaoxin_esp32::common::converter::bytes_to_i16_slice;
 use xiaoxin_esp32::common::event::{WsEvent, XzEvent};
 
+use xiaoxin_esp32::protocols::protocol::Protocol;
 use xiaoxin_esp32::protocols::websocket::message::ClientHelloMessage;
 use xiaoxin_esp32::protocols::websocket::ws_protocol::WebSocketProtocol;
+use xiaoxin_esp32::wifi;
 use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
@@ -58,7 +61,6 @@ use xiaoxin_esp32::{
     led::WS2812RMT,
     wifi::wifi,
 };
-use xiaoxin_esp32::{wifi, Application, ApplicationState};
 // 1. 引入 std::sync::mpsc
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
 
@@ -89,6 +91,7 @@ impl SharedAudioState {
 #[derive(Debug, Clone, Copy)]
 pub enum AudioCommand {
     StartRecording,
+    StopRecording,
     StopAndPlayback,
 }
 
@@ -148,6 +151,10 @@ fn main() -> Result<()> {
     let audio_packet_queue = Arc::new(Mutex::new(VecDeque::<AudioStreamPacket>::with_capacity(
         MAX_AUDIO_PACKETS_IN_QUEUE,
     )));
+
+    let received_audio_packet_queue = Arc::new(Mutex::new(
+        VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
+    ));
 
     // //待发送的音频data队列
     // let audio_send_queue: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(
@@ -437,7 +444,7 @@ fn main() -> Result<()> {
     let sys_loop = sysloop.clone();
     // 启动一个线程来处理音频事件
 
-    const THREAD_STACK_SIZE: usize = 48 * 1024;
+    const THREAD_STACK_SIZE: usize = 96 * 1024;
     let thread_builder = thread::Builder::new()
         .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
         .stack_size(THREAD_STACK_SIZE);
@@ -503,13 +510,14 @@ fn main() -> Result<()> {
             queue.push_back(packet);
 
             // 5. 唤醒消费者线程
-            info!("唤醒消费者线程 send AudioEvent");
+            // info!("唤醒消费者线程 send AudioEvent");
 
             tx3.send(XzEvent::SendAudioEvent).unwrap();
 
             // info!("唤醒消费者线程 - 完成 ！");
         };
-
+        const READ_CHUNK_SIZE: usize = 1024;
+        let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
         loop {
             // a. 检查是否有新的控制命令进来 (非阻塞)
             if let Ok(command) = cmd_receiver.try_recv() {
@@ -517,7 +525,7 @@ fn main() -> Result<()> {
                     AudioCommand::StartRecording => {
                         log::info!("[Audio Task] Received StartRecording command.");
                         // 清空旧缓冲区，准备录音
-                        state_clone.buffer.lock().unwrap().clear();
+                        // state_clone.buffer.lock().unwrap().clear();
                         is_recording = true;
                     }
                     AudioCommand::StopAndPlayback => {
@@ -558,22 +566,23 @@ fn main() -> Result<()> {
                             buffer_guard.clear(); // 清空缓冲区
                         }
                     }
+                    AudioCommand::StopRecording => {
+                        is_recording = false;
+                    }
                 }
             }
 
             // b. 如果当前处于录音状态，就持续读取数据
             if is_recording {
-                const READ_CHUNK_SIZE: usize = 1024;
-                let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
+                // read_buffer.clear();
                 let mut i2s_guard = i2s_clone.lock().unwrap();
                 if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
-                    // info!("bytes read from I2S : {} ", bytes_read);
+                    info!("bytes read from I2S : {} ", bytes_read);
                     if bytes_read > 0 {
                         // info!(
                         //     "从 es7210 中读取的[u8]PCM数据 = {:?}",
                         //     &read_buffer[..bytes_read]
                         // );
-                        let pcmu8 = &read_buffer[..bytes_read];
 
                         // info!("convert vec to i16 slice");
 
@@ -589,8 +598,6 @@ fn main() -> Result<()> {
                         //     Arc::clone(&audio_packet_queue);
 
                         // let audio_queue = Arc::clone(&audio_data_queue);
-
-                        let sys_loop_poster = sys_loop.clone();
 
                         // encode PCM to Opus
                         // let local_decoder = Arc::clone(&local_opus_decoder);
@@ -700,9 +707,8 @@ fn main() -> Result<()> {
     let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
     let mut volume_button = button::Button::new(pins.gpio47).unwrap();
 
-    let mut application_state = ApplicationState::Idle;
-
-    let mut app = Application::new();
+    // let mut application_state = ApplicationState::Idle;
+    // let mut app = Application::new();
 
     let tx1 = tx.clone();
     let ws_client = Arc::new(Mutex::new(WebSocketProtocol::new(
@@ -765,17 +771,28 @@ fn main() -> Result<()> {
         });
     });
 
-    let audio_data_queue2 = Arc::clone(&audio_packet_queue);
+    let audio_data_queue2: Arc<Mutex<VecDeque<AudioStreamPacket>>> =
+        Arc::clone(&audio_packet_queue);
 
     let sample_rate = 16000; //# 采样率固定为16000Hz
-    let channels = 2; //# 单声道
-    let mut local_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+    let channels = 2; //# 1. 单声道; 2. 双声道(立体声)
 
-    // let local_opus_decoder = Arc::new(Mutex::new(
-    //     OpusAudioDecoder::new(sample_rate, channels).unwrap(),
-    // ));
+    let mut opus_decoder = Arc::new(Mutex::new(Box::new(
+        OpusAudioDecoder::new(sample_rate, channels).unwrap(),
+    )));
+
+    // let thread_builder1 = thread::Builder::new()
+    //     .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
+    //     .stack_size(THREAD_STACK_SIZE);
+    // // 解压 server 发送的音频数据，并 play的 thread.
+    // let audio_play_thread = thread_builder1.spawn(move || {
+
+    // });
+
     info!("开始监听 websocket 事件");
+    let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
     for event in rx {
+        let decoder = Arc::clone(&opus_decoder);
         match event {
             XzEvent::OpenAudioChannel => {
                 let ws_client_clone: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
@@ -831,7 +848,9 @@ fn main() -> Result<()> {
                     let mut client = ws_client_clone1.lock().unwrap();
                     if client.is_connected() {
                         match client.send(FrameType::Binary(false), &packet.payload) {
-                            Ok(_) => info!("Worker thread: Audio packet sent!"),
+                            Ok(_) => {
+                                info!("Worker thread: Audio packet sent!")
+                            }
                             Err(e) => info!("Worker thread: Send error: {:?}", e),
                         }
                     } else {
@@ -839,16 +858,32 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            XzEvent::AudioDataReceived(audio_stream_packet) => todo!(),
+            XzEvent::AudioDataReceived(audio_stream_packet) => {
+                info!("received audio data, play_opus_audio");
+                play_opus_audio(
+                    decoder,
+                    i2s_clone_for_player.lock().unwrap(),
+                    audio_stream_packet.payload,
+                    &mut shared_pcm_buffer,
+                );
+            }
             XzEvent::WebsocketTextMessageReceived(text) => {
                 // let hello: serde_json::Value = serde_json::from_str(text).unwrap();
                 // info!("parse json success");
                 let message: serde_json::Value = serde_json::from_str(&text).unwrap();
-                info!("parse json success");
+                info!("websocket text message received,{}", text);
                 if message["type"] == "hello" {
                     let ws_client_clone1: Arc<Mutex<WebSocketProtocol>> = Arc::clone(&ws_client);
                     let mut client = ws_client_clone1.lock().unwrap();
                     client.on_server_hello_msg();
+                } else if message["type"] == "tts" {
+                    if message["state"] == "start" {
+                        cmd_sender.send(AudioCommand::StopRecording).unwrap();
+                    } else if message["state"] == "stop" {
+                        // cmd_sender.send(AudioCommand::StartRecording).unwrap();
+                    } else if message["state"] == "sentence_start" {
+                        // cmd_sender.send(AudioCommand::StartRecording).unwrap();
+                    }
                 }
             }
         }
@@ -999,6 +1034,83 @@ fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     }
 }
 
+fn play_opus_audio(
+    mut opus_decoder: Arc<Mutex<Box<OpusAudioDecoder>>>,
+    mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>,
+    opus_data: Vec<u8>,
+    pcm_buffer: &mut Vec<i16>,
+) {
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+
+    // decoder = decoder.decode(sample_rate, channels);
+
+    let decode_result = opus_decoder.lock().unwrap().decode(&opus_data);
+
+    // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
+    // let decode_result = decoder.decode(&opus_data);
+
+    match decode_result {
+        Ok(pcm_data) => {
+            info!("decode success.");
+            let is_stereo = channels == 2;
+
+            if !is_stereo {
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+                // 1. 清空旧数据，但保留容量（不释放内存）
+                pcm_buffer.clear();
+                pcm_buffer.resize(pcm_mono_data_len * 2, 0);
+                // let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_buffer[i * 2] = sample; // 左声道
+                    pcm_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_buffer.as_ptr() as *const u8,
+                        pcm_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            } else {
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_data.as_ptr() as *const u8,
+                        pcm_data.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            }
+        }
+        Err(e) => {
+            info!("Opus decode error: {:?}", e);
+            return;
+        }
+    }
+}
+
+fn play_pcm_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>, audio_data: &[u8]) {
+    const CHUNK_SIZE: usize = 4096;
+    for chunk in audio_data.chunks(CHUNK_SIZE) {
+        // 4. 逐块写入I2S驱动
+        match i2s_driver.write(chunk, BLOCK) {
+            Ok(bytes_written) => {
+                // 打印一些进度信息，方便调试
+                info!("Successfully wrote {} bytes to I2S.", bytes_written);
+            }
+            Err(e) => {
+                // 如果在写入过程中出错，打印错误并跳出循环
+                info!("I2S write error on a chunk: {:?}", e);
+                break;
+            }
+        }
+    }
+}
 fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {
     let mut ws2812 = WS2812RMT::new(led_pin, channel).unwrap();
     loop {
@@ -1064,7 +1176,9 @@ fn start_ws(
                         match client_guard
                             .send(FrameType::Binary(false), &audio_stream_packet.payload)
                         {
-                            Ok(_) => info!("Worker thread: Audio packet sent!"),
+                            Ok(_) => {
+                                // info!("Worker thread: Audio packet sent!")
+                            },
                             Err(e) => info!("Worker thread: Send error: {:?}", e),
                         }
                     } else {
@@ -1115,7 +1229,7 @@ fn start_ws_old(
         &config,
         timeout,
         move |event| {
-            info!("handle event");
+            // info!("handle event");
             handle_event(&tx, event, sysloop.clone());
         },
     )?));
@@ -1198,7 +1312,9 @@ fn start_ws_old(
                         match client_guard
                             .send(FrameType::Binary(false), &audio_stream_packet.payload)
                         {
-                            Ok(_) => info!("Worker thread: Audio packet sent!"),
+                            Ok(_) => {
+                                // info!("Worker thread: Audio packet sent!")
+                            },
                             Err(e) => info!("Worker thread: Send error: {:?}", e),
                         }
                     } else {

@@ -12,6 +12,7 @@ use log::{error, info};
 
 use crate::audio::AudioStreamPacket;
 use crate::common::event::{WsEvent, XzEvent};
+use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
 
 pub struct WebSocketProtocol {
@@ -45,79 +46,6 @@ impl WebSocketProtocol {
             internal_sender: inner_sender,
             internal_receiver: inner_receiver,
         }
-    }
-
-    pub fn open_audio_channel(&mut self) -> Result<(), Error> {
-        if self.client.is_some() {
-            info!("Audio channel already opened,so closing it first");
-            self.close_audio_channel()?;
-        }
-
-        let header = format!(
-            "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
-            self.device_id, self.device_id
-        );
-
-        let timeout = Duration::from_secs(10);
-        // let (tx, rx) = mpsc::channel::<ExampleEvent>();
-        // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
-        let ws_url = "ws://192.168.1.46:8000/xiaozhi/v1/";
-
-        let config = EspWebSocketClientConfig {
-            headers: Some(header.as_str()),
-            ..Default::default()
-        };
-
-        let sender = self.sender.clone();
-
-        info!("Connecting to {}", ws_url);
-        let internal_sender1 = self.internal_sender.clone();
-        self.client = Some(Box::new(EspWebSocketClient::new(
-            ws_url,
-            &config,
-            timeout,
-            move |event| {
-                info!("handle event");
-                handle_event(event, internal_sender1.clone(), sender.clone());
-            },
-        )?));
-
-        info!("wait for server hello message");
-        // wait for server hello message
-        // cmd_receiver.recv()?;
-        for event in &self.internal_receiver {
-            match event {
-                XzEvent::WebSocketConnected => {
-                    info!("Connected,try to send hello message");
-                    // send client hello message
-                    if let Some(client) = &mut self.client {
-                        if client.is_connected() {
-                            let hello_message = ClientHelloMessage::new().unwrap();
-                            info!("Worker thread: Sending hello message...");
-                            match client.send(FrameType::Text(false), hello_message.as_bytes()) {
-                                Ok(_) => info!("Worker thread: Hello message sent!"),
-                                Err(e) => info!("Worker thread: Send error: {:?}", e),
-                            }
-                        } else {
-                            info!("Worker thread: Client not connected, cannot send.");
-                        }
-                    }
-                    break;
-                }
-                // XzEvent::ServerHelloMessageReceived => {
-                //     info!("Worker thread: Server hello message received.");
-                //     break;
-                // }
-                // XzEvent::SendAudioEvent => todo!(),
-                // XzEvent::AudioDataReceived(audio_stream_packet) => todo!(),
-                _ => todo!(),
-            }
-        }
-
-        info!("ws protocol is connected.");
-        self.is_connected = true;
-
-        Ok(())
     }
 
     pub fn is_connected(&self) -> bool {
@@ -168,6 +96,89 @@ impl WebSocketProtocol {
             // client.close().unwrap();
         }
         self.is_connected = false;
+        Ok(())
+    }
+}
+
+impl Protocol for WebSocketProtocol {
+    fn send_text(&mut self, text: &str) -> Result<()> {
+        todo!()
+    }
+
+    fn send_audio(&mut self, audio: &AudioStreamPacket) -> Result<()> {
+        todo!()
+    }
+
+    fn open_audio_channel(&mut self) -> Result<(), Error> {
+        if self.client.is_some() {
+            info!("Audio channel already opened,so closing it first");
+            self.close_audio_channel()?;
+        }
+
+        let header = format!(
+            "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
+            self.device_id, self.device_id
+        );
+
+        let timeout = Duration::from_secs(10);
+        // let (tx, rx) = mpsc::channel::<ExampleEvent>();
+        // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
+        let ws_url = "ws://192.168.1.105:8000/xiaozhi/v1/";
+
+        let config = EspWebSocketClientConfig {
+            headers: Some(header.as_str()),
+            ..Default::default()
+        };
+
+        let sender = self.sender.clone();
+
+        info!("Connecting to {}", ws_url);
+        let internal_sender1 = self.internal_sender.clone();
+        self.client = Some(Box::new(EspWebSocketClient::new(
+            ws_url,
+            &config,
+            timeout,
+            move |event| {
+                // info!("handle event");
+                handle_event(event, internal_sender1.clone(), sender.clone());
+            },
+        )?));
+
+        info!("wait for server hello message");
+        // wait for server hello message
+        // cmd_receiver.recv()?;
+        for event in &self.internal_receiver {
+            match event {
+                XzEvent::WebSocketConnected => {
+                    info!("Connected,try to send hello message");
+                    // send client hello message
+                    if let Some(client) = &mut self.client {
+                        if client.is_connected() {
+                            let hello_message = ClientHelloMessage::new().unwrap();
+                            info!("Worker thread: Sending hello message...");
+                            match client.send(FrameType::Text(false), hello_message.as_bytes()) {
+                                Ok(_) => info!("Worker thread: Hello message sent!"),
+                                Err(e) => info!("Worker thread: Send error: {:?}", e),
+                            }
+                        } else {
+                            info!("Worker thread: Client not connected, cannot send.");
+                        }
+                    }
+                    break;
+                }
+                // XzEvent::ServerHelloMessageReceived => {
+                //     info!("Worker thread: Server hello message received.");
+                //     break;
+                // }
+                // XzEvent::SendAudioEvent => todo!(),
+                // XzEvent::AudioDataReceived(audio_stream_packet) => todo!(),
+                _ => todo!(),
+            }
+        }
+
+        info!("ws protocol is connected.");
+        self.is_connected = true;
+
         Ok(())
     }
 }

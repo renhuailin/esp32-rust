@@ -118,11 +118,13 @@ fn main() -> Result<()> {
     let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
     // 2. 创建一个总线管理器，并将I2C驱动的所有权交给它
-    let bus_manager = BusManagerSimple::new(i2c_driver);
+    let bus_manager: shared_bus::BusManager<shared_bus::NullMutex<I2cDriver<'_>>> =
+        BusManagerSimple::new(i2c_driver);
 
     // 3. 从管理器中为每个设备创建独立的“代理”
     //    axp_i2c_proxy 和 es_i2c_proxy 现在是两个可以独立使用的I2C设备
-    let axp173_i2c_proxy = bus_manager.acquire_i2c();
+    let axp173_i2c_proxy: shared_bus::I2cProxy<'_, shared_bus::NullMutex<I2cDriver<'_>>> =
+        bus_manager.acquire_i2c();
     let es8311_i2c_proxy = bus_manager.acquire_i2c();
     let es7210_i2c_proxy = bus_manager.acquire_i2c();
 

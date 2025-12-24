@@ -3,11 +3,12 @@ use std::{
     sync::{mpsc::Sender, MutexGuard},
 };
 
-use anyhow::{Error, Result};
+use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
     i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
     peripheral,
+    prelude::Peripherals,
 };
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
 use log::info;
@@ -17,34 +18,24 @@ use crate::{
     boards::board::Board,
     common::event::XzEvent,
     protocols::websocket::ws_protocol::WebSocketProtocol,
-    wifi::{self, Esp32WifiDriver},
+    wifi::{self, Esp32WifiDriver, WifiStation},
 };
 use shared_bus::{BusManager, BusManagerSimple};
 
-pub struct JiangLianS3CamBoard {}
+pub struct JiangLianS3CamBoard {
+    wifi_driver: Esp32WifiDriver,
+}
 
 impl JiangLianS3CamBoard {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new() -> Result<Self, Error> {
+        let peripherals: Peripherals = Peripherals::take().unwrap();
+        let sysloop = EspSystemEventLoop::take()?;
+        let wifi_driver = Esp32WifiDriver::new(peripherals.modem, sysloop.clone())?;
+        Ok(Self { wifi_driver })
     }
 
-    pub fn init(&self) {}
-
-    fn init_wifi(
-        &mut self,
-        modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
-        sysloop: EspSystemEventLoop,
-    ) -> Result<(), Error> {
-        let wifi = wifi::wifi("CU_liu81802", "china-ops", modem, sysloop.clone())?;
-        let mac_address_bytes = wifi.get_mac(WifiDeviceId::Sta)?;
-        let mac_address_str = mac_address_bytes
-            .iter()
-            .map(|&b| format!("{:02X}", b)) // :02X 表示两位、大写的十六进制数，不足则补零
-            .collect::<Vec<String>>()
-            .join(":");
-
-        info!("格式化后的 MAC 地址是: {}", mac_address_str);
-        // self.device_id = mac_address_str;
+    pub fn init(&mut self) -> Result<()> {
+        self.init_wifi()?;
         Ok(())
     }
 
@@ -80,7 +71,11 @@ impl JiangLianS3CamBoard {
 impl Board for JiangLianS3CamBoard {
     type WifiDriver = Esp32WifiDriver;
 
-    fn init_wifi(&mut self) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        todo!()
+    fn init_wifi(&mut self) -> std::result::Result<(), Error> {
+        let ssid = "CU_liu81802";
+        let password = "china-ops";
+
+        self.wifi_driver.connect(ssid, password)?;
+        Ok(())
     }
 }

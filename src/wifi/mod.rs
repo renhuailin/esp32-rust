@@ -37,8 +37,9 @@ pub struct Esp32WifiDriver {
     wifi: Arc<Mutex<EspWifi<'static>>>,
     sysloop: EspSystemEventLoop,
 }
+
 impl Esp32WifiDriver {
-    fn new(
+    pub fn new(
         modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
         sysloop: EspSystemEventLoop,
     ) -> Result<Self> {

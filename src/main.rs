@@ -112,7 +112,7 @@ fn main() -> Result<()> {
     //    !!! 警告: 您必须根据开发板的原理图，确认AXP173连接的是哪个I2C总线和引脚！
     let sda = pins.gpio1;
     let scl = pins.gpio2;
-    let i2c = peripherals.i2c1;
+    let i2c: esp_idf_hal::i2c::I2C1 = peripherals.i2c1;
     let config = I2cConfig::new();
 
     let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
@@ -125,7 +125,8 @@ fn main() -> Result<()> {
     //    axp_i2c_proxy 和 es_i2c_proxy 现在是两个可以独立使用的I2C设备
     let axp173_i2c_proxy: shared_bus::I2cProxy<'_, shared_bus::NullMutex<I2cDriver<'_>>> =
         bus_manager.acquire_i2c();
-    let es8311_i2c_proxy = bus_manager.acquire_i2c();
+    let es8311_i2c_proxy: shared_bus::I2cProxy<'_, shared_bus::NullMutex<I2cDriver<'_>>> =
+        bus_manager.acquire_i2c();
     let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
     let sysloop = EspSystemEventLoop::take()?;

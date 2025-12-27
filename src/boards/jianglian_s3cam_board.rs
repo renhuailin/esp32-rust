@@ -5,10 +5,12 @@ use std::{
 
 use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
+    gpio::AnyInputPin,
     i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
     peripheral,
     prelude::Peripherals,
+    spi::SpiDriver,
 };
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
 use log::info;
@@ -17,6 +19,7 @@ use crate::{
     axp173::{Axp173, Ldo},
     boards::board::Board,
     common::event::XzEvent,
+    display::{lcd::st7789::LcdSt7789, Display},
     protocols::websocket::ws_protocol::WebSocketProtocol,
     wifi::{self, Esp32WifiDriver, WifiStation},
 };
@@ -24,14 +27,41 @@ use shared_bus::{BusManager, BusManagerSimple};
 
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
+    display: Box<dyn Display>,
 }
 
 impl JiangLianS3CamBoard {
     pub fn new() -> Result<Self, Error> {
         let peripherals: Peripherals = Peripherals::take().unwrap();
+        let pins = peripherals.pins;
+
         let sysloop = EspSystemEventLoop::take()?;
         let wifi_driver = Esp32WifiDriver::new(peripherals.modem, sysloop.clone())?;
-        Ok(Self { wifi_driver })
+
+        let dc = pins.gpio7;
+        // SPI 总线引脚 (使用硬件 SPI2)
+        let sck = pins.gpio5;
+        let sdi = pins.gpio4; // MOSI 在驱动中通常被称为 SDI (Serial Data In)
+        let sdo = Option::<AnyInputPin>::None; // MISO
+        let cs = pins.gpio6; // 直接使用引脚，而不是PinDriver
+
+        // 3. 初始化 SPI 驱动
+        // 创建 SPI 驱动程序实例
+        let spi3 = peripherals.spi3;
+        let driver = SpiDriver::new(
+            spi3, // 使用 SPI3
+            sck,
+            sdi,
+            sdo,
+            &Default::default(),
+        )
+        .unwrap();
+
+        let display = LcdSt7789::new(driver, dc.into(), cs.into())?;
+        Ok(Self {
+            wifi_driver,
+            display: Box::new(display),
+        })
     }
 
     pub fn init(&mut self) -> Result<()> {

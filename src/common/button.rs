@@ -1,11 +1,7 @@
-use crate::common::button;
 use anyhow::Result;
 use esp_idf_hal::gpio::AnyIOPin;
 use esp_idf_hal::task::asynch::Notification;
-use esp_idf_svc::hal::{
-    gpio::{AnyInputPin, InterruptType, PinDriver, Pull},
-    peripherals::Peripherals,
-};
+use esp_idf_svc::hal::gpio::{InterruptType, PinDriver, Pull};
 use std::{num::NonZeroU32, sync::Arc};
 
 // 这是一个可复用的Button结构体
@@ -45,6 +41,16 @@ impl<'d> Button<'d> {
             _pin: button_pin,
             notification,
         })
+    }
+
+    pub fn on_click<F>(&mut self, click_handler: F) -> Result<()>
+    where
+        F: FnMut() + Send + 'static,
+    {
+        unsafe {
+            self._pin.subscribe(click_handler)?;
+        }
+        Ok(())
     }
 
     pub fn enable_interrupt(&mut self) -> Result<(), Box<dyn std::error::Error>> {

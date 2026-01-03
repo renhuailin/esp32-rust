@@ -19,7 +19,7 @@ use crate::{
     audio::xiaozhi_audio_codec::XiaozhiAudioCodec,
     axp173::{Axp173, Ldo},
     boards::board::Board,
-    common::event::XzEvent,
+    common::{button::Button, event::XzEvent},
     display::{lcd::st7789::LcdSt7789, Display},
     protocols::websocket::ws_protocol::WebSocketProtocol,
     wifi::{self, Esp32WifiDriver, WifiStation},
@@ -31,11 +31,12 @@ pub struct JiangLianS3CamBoard {
     display: Box<dyn Display>,
     audio_codec: XiaozhiAudioCodec,
     bus_manager: &'static BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
+    touch_button: &'static Button<'static>,
+    volume_button: &'static Button<'static>,
 }
 
 impl JiangLianS3CamBoard {
-    pub fn new(// bus_manager: BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
-    ) -> Result<Self, Error> {
+    pub fn new() -> Result<Self, Error> {
         let peripherals: Peripherals = Peripherals::take().unwrap();
         let pins = peripherals.pins;
 
@@ -78,6 +79,11 @@ impl JiangLianS3CamBoard {
         //    这块内存将永远不会被释放（直到断电），从而满足了生命周期要求。
         let bus_manager = Box::leak(manager_box);
 
+        let mut touch_button_box = Box::new(Button::new(pins.gpio0)?);
+        let mut volume_button_box = Box::new(Button::new(pins.gpio47)?);
+        let touch_button = Box::leak(touch_button_box);
+        let volume_button = Box::leak(volume_button_box);
+
         // 现在从 bus_manager 获取 I2C 代理来创建 audio_codec
         let es8311_i2c_proxy = bus_manager.acquire_i2c();
         let es7210_i2c_proxy = bus_manager.acquire_i2c();
@@ -89,6 +95,8 @@ impl JiangLianS3CamBoard {
             display: Box::new(display),
             audio_codec,
             bus_manager,
+            touch_button,
+            volume_button,
         })
     }
 
@@ -121,6 +129,8 @@ impl JiangLianS3CamBoard {
 
         axp173.set_exten(true).unwrap();
     }
+
+    fn init_buttons(&mut self) {}
 }
 
 impl Board for JiangLianS3CamBoard {

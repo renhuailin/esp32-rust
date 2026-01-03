@@ -46,7 +46,7 @@ impl Application {
         Self {
             state: ApplicationState::Idle,
             protocol,
-            device_id: "".to_string(),
+            device_id: config.device_id,
         }
     }
 

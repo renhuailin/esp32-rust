@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
     gpio::AnyInputPin,
-    i2c::I2cDriver,
+    i2c::{I2cConfig, I2cDriver},
     i2s::{I2sBiDir, I2sDriver},
     peripheral,
     prelude::Peripherals,
@@ -16,6 +16,7 @@ use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
 use log::info;
 
 use crate::{
+    audio::xiaozhi_audio_codec::XiaozhiAudioCodec,
     axp173::{Axp173, Ldo},
     boards::board::Board,
     common::event::XzEvent,
@@ -28,10 +29,13 @@ use shared_bus::{BusManager, BusManagerSimple};
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
     display: Box<dyn Display>,
+    audio_codec: XiaozhiAudioCodec,
+    bus_manager: &'static BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
 }
 
 impl JiangLianS3CamBoard {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new(// bus_manager: BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
+    ) -> Result<Self, Error> {
         let peripherals: Peripherals = Peripherals::take().unwrap();
         let pins = peripherals.pins;
 
@@ -58,9 +62,33 @@ impl JiangLianS3CamBoard {
         .unwrap();
 
         let display = LcdSt7789::new(driver, dc.into(), cs.into())?;
+
+        // 初始化 I2C 驱动和总线管理器
+        let sda = pins.gpio1;
+        let scl = pins.gpio2;
+        let i2c: esp_idf_hal::i2c::I2C1 = peripherals.i2c1;
+        let config = I2cConfig::new();
+
+        let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
+
+        let manager_box = Box::new(BusManagerSimple::new(i2c_driver));
+
+        // 2. 使用 Box::leak()。
+        //    这会消耗掉 Box，返回一个 &'static mut BusManager... 引用。
+        //    这块内存将永远不会被释放（直到断电），从而满足了生命周期要求。
+        let bus_manager = Box::leak(manager_box);
+
+        // 现在从 bus_manager 获取 I2C 代理来创建 audio_codec
+        let es8311_i2c_proxy = bus_manager.acquire_i2c();
+        let es7210_i2c_proxy = bus_manager.acquire_i2c();
+
+        let audio_codec = XiaozhiAudioCodec::new(es8311_i2c_proxy, es7210_i2c_proxy);
+
         Ok(Self {
             wifi_driver,
             display: Box::new(display),
+            audio_codec,
+            bus_manager,
         })
     }
 
@@ -69,11 +97,8 @@ impl JiangLianS3CamBoard {
         Ok(())
     }
 
-    fn init_power_management(
-        &mut self,
-        bus_manager: &BusManager<shared_bus::NullMutex<I2cDriver<'_>>>,
-    ) {
-        let axp173_i2c_proxy = bus_manager.acquire_i2c();
+    fn init_power_management(&mut self) {
+        let axp173_i2c_proxy = self.bus_manager.acquire_i2c();
         // 2. 创建AXP173驱动实例
         let mut axp173 = Axp173::new(axp173_i2c_proxy);
         axp173.init().unwrap();

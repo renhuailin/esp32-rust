@@ -12,7 +12,7 @@ use esp_idf_hal::{
     prelude::Peripherals,
     spi::SpiDriver,
 };
-use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
 use log::info;
 
 use crate::{
@@ -31,8 +31,11 @@ pub struct JiangLianS3CamBoard {
     display: Box<dyn Display>,
     audio_codec: XiaozhiAudioCodec,
     bus_manager: &'static BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
-    touch_button: &'static Button<'static>,
-    volume_button: &'static Button<'static>,
+    touch_button: &'static mut Button<'static>,
+    volume_button: &'static mut Button<'static>,
+
+    on_touch_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
+    on_volume_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
 }
 
 impl JiangLianS3CamBoard {
@@ -79,8 +82,8 @@ impl JiangLianS3CamBoard {
         //    这块内存将永远不会被释放（直到断电），从而满足了生命周期要求。
         let bus_manager = Box::leak(manager_box);
 
-        let mut touch_button_box = Box::new(Button::new(pins.gpio0)?);
-        let mut volume_button_box = Box::new(Button::new(pins.gpio47)?);
+        let touch_button_box = Box::new(Button::new(pins.gpio0)?);
+        let volume_button_box = Box::new(Button::new(pins.gpio47)?);
         let touch_button = Box::leak(touch_button_box);
         let volume_button = Box::leak(volume_button_box);
 
@@ -97,11 +100,15 @@ impl JiangLianS3CamBoard {
             bus_manager,
             touch_button,
             volume_button,
+            on_touch_button_clicked: None,
+            on_volume_button_clicked: None,
         })
     }
 
     pub fn init(&mut self) -> Result<()> {
         self.init_wifi()?;
+        self.init_power_management();
+        self.init_buttons();
         Ok(())
     }
 
@@ -130,11 +137,27 @@ impl JiangLianS3CamBoard {
         axp173.set_exten(true).unwrap();
     }
 
-    fn init_buttons(&mut self) {}
+    fn init_buttons(&mut self) {
+        if let Some(on_clicked) = self.on_touch_button_clicked.take() {
+            self.touch_button.on_click(on_clicked).unwrap();
+        }
+
+        if let Some(on_clicked) = self.on_volume_button_clicked.take() {
+            self.volume_button.on_click(on_clicked).unwrap();
+        }
+    }
 }
 
 impl Board for JiangLianS3CamBoard {
     type WifiDriver = Esp32WifiDriver;
+
+    fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
+        self.on_touch_button_clicked = Some(on_clicked);
+    }
+
+    fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
+        self.on_volume_button_clicked = Some(on_clicked);
+    }
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
         let ssid = "CU_liu81802";
@@ -142,5 +165,9 @@ impl Board for JiangLianS3CamBoard {
 
         self.wifi_driver.connect(ssid, password)?;
         Ok(())
+    }
+
+    fn get_wifi_driver(&self) -> &Self::WifiDriver {
+        &self.wifi_driver
     }
 }

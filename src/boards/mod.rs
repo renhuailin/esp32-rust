@@ -1,2 +1,2 @@
-mod board;
-mod jianglian_s3cam_board;
+pub mod board;
+pub mod jianglian_s3cam_board;

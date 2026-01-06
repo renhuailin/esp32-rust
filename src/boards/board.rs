@@ -11,6 +11,11 @@ pub trait Board {
     // fn get_wifi(&self) -> Self::WifiDriver;
     fn init_wifi(&mut self) -> Result<(), Error>;
 
+    fn get_wifi_driver(&self) -> &Self::WifiDriver;
+
+    fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
+    fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
+
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;
     // fn get_display(&self) -> Self::DisplayDriver;

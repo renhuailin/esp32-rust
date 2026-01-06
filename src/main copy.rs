@@ -38,7 +38,7 @@ use futures::{select, FutureExt};
 use log::{error, info, warn};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
-use xiaoxin_esp32::application::{Application, ApplicationConfig, ApplicationState};
+use xiaoxin_esp32::application::{Application, ApplicationState};
 use xiaoxin_esp32::audio::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::audio::opus::encoder::OpusAudioEncoder;
@@ -96,12 +96,6 @@ pub enum AudioCommand {
 }
 
 fn main() -> Result<()> {
-    let mut app = Application::new();
-    app.start();
-    Ok(())
-}
-
-fn main1() -> Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -520,6 +514,7 @@ fn main1() -> Result<()> {
 
             // 5. 唤醒消费者线程
             // info!("唤醒消费者线程 send AudioEvent");
+
             tx3.send(XzEvent::SendAudioEvent).unwrap();
 
             // info!("唤醒消费者线程 - 完成 ！");
@@ -719,7 +714,10 @@ fn main1() -> Result<()> {
     // let mut app = Application::new();
 
     let tx1 = tx.clone();
-    let ws_client = Arc::new(Mutex::new(WebSocketProtocol::new(mac_address_str.as_str())));
+    let ws_client = Arc::new(Mutex::new(WebSocketProtocol::new(
+        mac_address_str.as_str(),
+        tx1,
+    )));
 
     // 创建一个 MPSC channel，用于从事件处理器向后台线程发送命令
     // let (ws_command_tx, ws_command_rx) = mpsc::channel::<WsCommand>();

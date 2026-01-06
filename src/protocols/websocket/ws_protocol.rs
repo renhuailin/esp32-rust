@@ -11,19 +11,21 @@ use esp_idf_sys::EspError;
 use log::{error, info};
 
 use crate::audio::AudioStreamPacket;
-use crate::common::event::{WsEvent, XzEvent};
+use crate::common::event::XzEvent;
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
 
 pub struct WebSocketProtocol {
     client: Option<Box<EspWebSocketClient<'static>>>,
-    sender: Sender<XzEvent>,
-
+    // sender: Sender<XzEvent>,
     internal_sender: Sender<XzEvent>,
     internal_receiver: Receiver<XzEvent>,
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
     is_connected: bool,
+    on_incoming_text: Option<Box<dyn FnMut(&str) -> Result<(), Error> + Send + 'static>>,
+    on_incoming_audio:
+        Option<Box<dyn FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static>>,
 }
 
 impl WebSocketProtocol {
@@ -36,15 +38,17 @@ impl WebSocketProtocol {
     ///
     /// # 返回值
     /// 返回初始化后的 WebSocketProtocol 实例
-    pub fn new(device_id: &str, sender: Sender<XzEvent>) -> Self {
+    pub fn new(device_id: &str) -> Self {
         let (inner_sender, inner_receiver): (Sender<XzEvent>, Receiver<XzEvent>) = channel();
         Self {
             client: None,
-            sender,
+            // sender,
             device_id: device_id.to_string(),
             is_connected: false,
             internal_sender: inner_sender,
             internal_receiver: inner_receiver,
+            on_incoming_text: None,
+            on_incoming_audio: None,
         }
     }
 
@@ -130,17 +134,78 @@ impl Protocol for WebSocketProtocol {
             ..Default::default()
         };
 
-        let sender = self.sender.clone();
+        // let sender = self.sender.clone();
 
         info!("Connecting to {}", ws_url);
         let internal_sender1 = self.internal_sender.clone();
+
+        let mut on_incoming_text_handler = self.on_incoming_text.take();
+        let mut on_incoming_audio_handler = self.on_incoming_audio.take();
+
         self.client = Some(Box::new(EspWebSocketClient::new(
             ws_url,
             &config,
             timeout,
             move |event| {
                 // info!("handle event");
-                handle_event(event, internal_sender1.clone(), sender.clone());
+                // handle_event(event, internal_sender1.clone(), sender.clone());
+                if let Ok(event) = event {
+                    match event.event_type {
+                        WebSocketEventType::BeforeConnect => {
+                            info!("Websocket before connect");
+                        }
+                        WebSocketEventType::Connected => {
+                            info!("Websocket connected");
+                            // internal_sender.send(XzEvent::WebSocketConnected).unwrap();
+                        }
+                        WebSocketEventType::Disconnected => {
+                            info!("Websocket disconnected");
+                        }
+
+                        WebSocketEventType::Close(reason) => {
+                            info!("Websocket close, reason: {reason:?}");
+                        }
+
+                        WebSocketEventType::Closed => {
+                            info!("Websocket closed");
+                        }
+
+                        WebSocketEventType::Text(text) => {
+                            // info!("Websocket received a text message");
+                            info!("Websocket received a text message, text: {text}");
+                            // sender
+                            //     .send(XzEvent::WebsocketTextMessageReceived(text.to_string()))
+                            //     .unwrap();
+                            // let hello: serde_json::Value = serde_json::from_str(text).unwrap();
+                            // info!("parse json success");
+                            if let Some(on_incoming_text) = on_incoming_text_handler.as_mut() {
+                                let _ = (on_incoming_text)(text);
+                            }
+                        }
+
+                        WebSocketEventType::Binary(binary) => {
+                            // info!("Websocket recv, binary: {binary:?}");
+                            let packet = AudioStreamPacket {
+                                sample_rate: 16000,
+                                frame_duration: 60,
+                                timestamp: 0,
+                                payload: binary.to_vec(),
+                            };
+
+                            // sender.send(XzEvent::AudioDataReceived(packet)).unwrap();
+
+                            if let Some(on_incoming_audio) = on_incoming_audio_handler.as_mut() {
+                                let _ = (on_incoming_audio)(&packet);
+                            }
+                        }
+                        WebSocketEventType::Ping => {
+                            info!("Websocket ping");
+                        }
+                        WebSocketEventType::Pong => {
+                            info!("Websocket pong");
+                        }
+                    }
+                }
             },
         )?));
 
@@ -179,6 +244,22 @@ impl Protocol for WebSocketProtocol {
         info!("ws protocol is connected.");
         self.is_connected = true;
 
+        Ok(())
+    }
+
+    fn on_incoming_text<F>(&mut self, handler: F) -> Result<(), Error>
+    where
+        F: FnMut(&str) -> Result<(), Error> + Send + 'static,
+    {
+        self.on_incoming_text = Some(Box::new(handler));
+        Ok(())
+    }
+
+    fn on_incoming_audio<F>(&mut self, handler: F) -> Result<(), Error>
+    where
+        F: FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static,
+    {
+        self.on_incoming_audio = Some(Box::new(handler));
         Ok(())
     }
 }

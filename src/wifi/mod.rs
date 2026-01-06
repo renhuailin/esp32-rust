@@ -5,7 +5,7 @@ use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::peripheral,
     nvs::EspNvsPartition,
-    wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
+    wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiDeviceId},
 };
 use log::info;
 
@@ -121,15 +121,22 @@ impl WifiStation for Esp32WifiDriver {
     }
 
     fn disconnect(&mut self) -> Result<()> {
-        todo!()
+        self.wifi.lock().unwrap().disconnect()?;
+        Ok(())
     }
 
     fn is_connected(&self) -> Result<bool> {
-        todo!()
+        Ok(self.wifi.lock().unwrap().is_connected()?)
     }
 
     fn get_mac_address(&self) -> Result<String> {
-        todo!()
+        let mac_address_bytes = self.wifi.lock().unwrap().get_mac(WifiDeviceId::Sta)?;
+        let mac_address_str = mac_address_bytes
+            .iter()
+            .map(|&b| format!("{:02X}", b)) // :02X 表示两位、大写的十六进制数，不足则补零
+            .collect::<Vec<String>>()
+            .join(":");
+        Ok(mac_address_str)
     }
 
     fn get_ip_address(&self) -> Result<String> {

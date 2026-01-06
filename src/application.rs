@@ -51,10 +51,11 @@ impl Application {
 
         let mut board = Box::new(jianglian_s3cam_board::JiangLianS3CamBoard::new().unwrap());
 
-        board.on_touch_button_clicked(Box::new(move || info!("Touch button clicked")));
-        board.on_volume_button_clicked(Box::new(move || info!("Volume button clicked")));
+        board.on_touch_button_clicked(Box::new(move || println!("Touch button clicked")));
+        board.on_volume_button_clicked(Box::new(move || println!("Volume button clicked")));
 
         board.init().unwrap();
+        info!("board init success");
         let mac_address = board.get_wifi_driver().get_mac_address().unwrap();
         let protocol = WebSocketProtocol::new(mac_address.as_str());
 
@@ -77,6 +78,7 @@ impl Application {
             Ok(())
         })?;
 
+        info!("开始处理内部事件 ...");
         // 处理内部事件
         for event in &self.inner_receiver {
             match event {
@@ -105,7 +107,7 @@ impl Application {
                 _ => todo!(),
             }
         }
-
+        info!("application start 函数返回！");
         Ok(())
     }
 

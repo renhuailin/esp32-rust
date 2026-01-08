@@ -47,12 +47,13 @@ impl EspEventDeserializer for WsEvent {
 
 #[derive(Clone, Debug)]
 pub enum XzEvent {
-    // SpeakButtonPressed,
+    BootButtonClicked,
+    VolumeButtonClicked,
     OpenAudioChannel,
     CloseAudioChannel,
     WebSocketConnected,
-    ServerHelloMessageReceived, // 收到服务器返回的hello消息
-    SendAudioEvent,             // 发送音频数据事件
+    ServerHelloMessageReceived(String), // 收到服务器返回的hello消息
+    SendAudioEvent,                     // 发送音频数据事件
     AudioDataReceived(AudioStreamPacket),
     WebsocketTextMessageReceived(String),
 }

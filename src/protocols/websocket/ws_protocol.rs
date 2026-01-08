@@ -1,5 +1,6 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result};
 use esp_idf_hal::io::EspIOError;
@@ -11,6 +12,7 @@ use esp_idf_sys::EspError;
 use log::{error, info};
 
 use crate::audio::AudioStreamPacket;
+use crate::common::enums::AbortReason;
 use crate::common::event::XzEvent;
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
@@ -23,9 +25,11 @@ pub struct WebSocketProtocol {
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
     is_connected: bool,
+    // session_id: Option<String>, //Websocket协议不返回 session_id，所以消息中的会话ID可设置为空。
     on_incoming_text: Option<Box<dyn FnMut(&str) -> Result<(), Error> + Send + 'static>>,
     on_incoming_audio:
         Option<Box<dyn FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static>>,
+    last_incoming_time: Arc<Mutex<Option<Instant>>>, // 上一次收到服务器端数据的时间
 }
 
 impl WebSocketProtocol {
@@ -49,6 +53,7 @@ impl WebSocketProtocol {
             internal_receiver: inner_receiver,
             on_incoming_text: None,
             on_incoming_audio: None,
+            last_incoming_time: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -57,6 +62,10 @@ impl WebSocketProtocol {
             return client.is_connected() && self.is_connected;
         }
         false
+    }
+
+    pub fn get_last_incoming_time(&self) -> Option<Instant> {
+        *self.last_incoming_time.lock().unwrap()
     }
 
     pub fn send_hello_message(&mut self) -> Result<()> {
@@ -100,6 +109,7 @@ impl WebSocketProtocol {
             // client.close().unwrap();
         }
         self.is_connected = false;
+        *self.last_incoming_time.lock().unwrap() = None;
         Ok(())
     }
 }
@@ -113,7 +123,7 @@ impl Protocol for WebSocketProtocol {
         todo!()
     }
 
-    fn open_audio_channel(&mut self) -> Result<(), Error> {
+    fn open_audio_channel(&mut self) -> Result<bool, Error> {
         if self.client.is_some() {
             info!("Audio channel already opened,so closing it first");
             self.close_audio_channel()?;
@@ -137,11 +147,13 @@ impl Protocol for WebSocketProtocol {
         // let sender = self.sender.clone();
 
         info!("Connecting to {}", ws_url);
-        let internal_sender1 = self.internal_sender.clone();
+        // let internal_sender1 = self.internal_sender.clone();
+        let last_incoming_time = self.last_incoming_time.clone();
 
         let mut on_incoming_text_handler = self.on_incoming_text.take();
         let mut on_incoming_audio_handler = self.on_incoming_audio.take();
 
+        let inner_sender = self.internal_sender.clone();
         self.client = Some(Box::new(EspWebSocketClient::new(
             ws_url,
             &config,
@@ -171,19 +183,28 @@ impl Protocol for WebSocketProtocol {
                         }
 
                         WebSocketEventType::Text(text) => {
-                            // info!("Websocket received a text message");
                             info!("Websocket received a text message, text: {text}");
-                            // sender
-                            //     .send(XzEvent::WebsocketTextMessageReceived(text.to_string()))
-                            //     .unwrap();
-                            // let hello: serde_json::Value = serde_json::from_str(text).unwrap();
-                            // info!("parse json success");
-                            if let Some(on_incoming_text) = on_incoming_text_handler.as_mut() {
-                                let _ = (on_incoming_text)(text);
+                            let message: serde_json::Value = serde_json::from_str(text).unwrap();
+                            info!("parse json success");
+                            if let Some(message_type) = message["type"].as_str() {
+                                if message_type == "hello" {
+                                    inner_sender
+                                        .send(XzEvent::ServerHelloMessageReceived(text.to_string()))
+                                        .unwrap();
+                                } else {
+                                    if let Some(on_incoming_text) =
+                                        on_incoming_text_handler.as_mut()
+                                    {
+                                        let _ = (on_incoming_text)(text);
+                                    }
+                                }
                             }
+
+                            *last_incoming_time.lock().unwrap() = Some(Instant::now());
                         }
 
                         WebSocketEventType::Binary(binary) => {
+                            *last_incoming_time.lock().unwrap() = Some(Instant::now());
                             // info!("Websocket recv, binary: {binary:?}");
                             let packet = AudioStreamPacket {
                                 sample_rate: 16000,
@@ -229,12 +250,13 @@ impl Protocol for WebSocketProtocol {
                             info!("Worker thread: Client not connected, cannot send.");
                         }
                     }
+                    // break;
+                }
+                XzEvent::ServerHelloMessageReceived(_) => {
+                    // info!("Worker thread: Server hello message received. {}", text);
+                    // self.parse_server_hello_message(text);
                     break;
                 }
-                // XzEvent::ServerHelloMessageReceived => {
-                //     info!("Worker thread: Server hello message received.");
-                //     break;
-                // }
                 // XzEvent::SendAudioEvent => todo!(),
                 // XzEvent::AudioDataReceived(audio_stream_packet) => todo!(),
                 _ => todo!(),
@@ -244,7 +266,7 @@ impl Protocol for WebSocketProtocol {
         info!("ws protocol is connected.");
         self.is_connected = true;
 
-        Ok(())
+        Ok(true)
     }
 
     fn on_incoming_text<F>(&mut self, handler: F) -> Result<(), Error>
@@ -262,6 +284,47 @@ impl Protocol for WebSocketProtocol {
         self.on_incoming_audio = Some(Box::new(handler));
         Ok(())
     }
+
+    fn is_timeout(&self) -> bool {
+        let new_now = Instant::now();
+        let timeout_seconds = 120;
+        if let Some(last_incoming_time) = *self.last_incoming_time.lock().unwrap() {
+            if new_now.duration_since(last_incoming_time).as_secs() > timeout_seconds {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn is_audio_channel_opened(&self) -> bool {
+        // return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+        return self.is_connected && !self.is_timeout();
+    }
+
+    fn send_abort_speaking(&mut self, reason: AbortReason) -> Result<(), Error> {
+        let message = match reason {
+            AbortReason::WakeWordDetected => {
+                format!(
+                    r#"{{"session_id":"{}","type":"abort","reason":"wake_word_detected"}}"#,
+                    self.device_id
+                )
+            }
+            _ => {
+                format!(r#"{{"session_id":"{}","type":"abort"}}"#, self.device_id)
+            }
+        };
+        self.send_text(&message)?;
+
+        //     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"abort\"";
+        // if (reason == kAbortReasonWakeWordDetected) {
+        //     message += ",\"reason\":\"wake_word_detected\"";
+        // }
+        // message += "}";
+        // SendText(message);
+        // let message = format!(r#"{{"session_id":"{}","type":"abort""#, self.session_id);
+
+        Ok(())
+    }
 }
 
 impl Drop for WebSocketProtocol {
@@ -269,6 +332,7 @@ impl Drop for WebSocketProtocol {
         let _ = self.close_audio_channel();
     }
 }
+
 fn handle_event(
     event: &Result<WebSocketEvent, EspIOError>,
     internal_sender: Sender<XzEvent>,

@@ -38,7 +38,7 @@ use futures::{select, FutureExt};
 use log::{error, info, warn};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
-use xiaoxin_esp32::application::{Application, ApplicationConfig, ApplicationState};
+use xiaoxin_esp32::application::{Application, ApplicationConfig};
 use xiaoxin_esp32::audio::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::audio::opus::encoder::OpusAudioEncoder;
@@ -96,8 +96,13 @@ pub enum AudioCommand {
 }
 
 fn main() -> Result<()> {
-    let mut app = Application::new();
-    app.start();
+    let app = Application::new();
+    match app {
+        Ok(mut application) => application.start()?,
+        Err(error) => {
+            error!("{}", error);
+        }
+    };
     Ok(())
 }
 
@@ -832,7 +837,7 @@ fn main1() -> Result<()> {
                 client.send_hello_message().unwrap();
                 info!("sent hello message");
             }
-            XzEvent::ServerHelloMessageReceived => todo!(),
+            XzEvent::ServerHelloMessageReceived(_) => todo!(),
             XzEvent::SendAudioEvent => {
                 if let Some(packet) = audio_data_queue2.lock().unwrap().pop_front() {
                     //尝试本地解码
@@ -891,6 +896,7 @@ fn main1() -> Result<()> {
                     }
                 }
             }
+            _ => todo!(),
         }
     }
 

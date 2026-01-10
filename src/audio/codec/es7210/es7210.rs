@@ -1,5 +1,5 @@
-use crate::audio::es7210::enums::MicGain;
-use crate::audio::es7210::reg::*;
+use crate::audio::codec::es7210::enums::MicGain;
+use crate::audio::codec::es7210::reg::*;
 use crate::utils::bits::update_bit;
 use anyhow::Result;
 use embedded_hal::blocking::i2c::{Write, WriteRead};

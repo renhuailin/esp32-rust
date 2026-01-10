@@ -11,8 +11,8 @@ use esp_idf_svc::ws::FrameType;
 use esp_idf_sys::EspError;
 use log::{error, info};
 
-use crate::audio::AudioStreamPacket;
-use crate::common::enums::AbortReason;
+use crate::audio::codec::AudioStreamPacket;
+use crate::common::enums::{AbortReason, ListeningMode};
 use crate::common::event::XzEvent;
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
@@ -314,15 +314,35 @@ impl Protocol for WebSocketProtocol {
             }
         };
         self.send_text(&message)?;
+        Ok(())
+    }
 
-        //     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"abort\"";
-        // if (reason == kAbortReasonWakeWordDetected) {
-        //     message += ",\"reason\":\"wake_word_detected\"";
+    fn send_start_linstening(&mut self, listening_mode: ListeningMode) -> Result<(), Error> {
+        // std::string message = "{\"session_id\":\"" + session_id_ + "\"";
+        // message += ",\"type\":\"listen\",\"state\":\"start\"";
+        // if (mode == kListeningModeRealtime) {
+        //     message += ",\"mode\":\"realtime\"";
+        // } else if (mode == kListeningModeAutoStop) {
+        //     message += ",\"mode\":\"auto\"";
+        // } else {
+        //     message += ",\"mode\":\"manual\"";
         // }
         // message += "}";
         // SendText(message);
-        // let message = format!(r#"{{"session_id":"{}","type":"abort""#, self.session_id);
 
+        let mode = match listening_mode {
+            ListeningMode::AutoStop => "auto",
+            ListeningMode::Realtime => "realtime",
+        };
+
+        let message = format!(
+            r##"{{"session_id": "{}",
+    "type": "listen",
+    "state": "start",
+    "mode": "{}"}}"##,
+            self.device_id, mode
+        );
+        self.send_text(&message)?;
         Ok(())
     }
 }

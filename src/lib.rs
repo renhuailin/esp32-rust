@@ -8,5 +8,6 @@ pub mod display;
 pub mod lcd;
 pub mod led;
 pub mod protocols;
+pub mod setting;
 pub mod utils;
 pub mod wifi;

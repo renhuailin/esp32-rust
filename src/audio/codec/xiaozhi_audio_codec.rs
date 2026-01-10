@@ -1,12 +1,18 @@
+use crate::{
+    audio::codec::{audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311},
+    setting::nvs_setting::NvsSetting,
+};
+use anyhow::Result;
 use esp_idf_hal::{delay::Delay, i2c::I2cDriver};
-use log::info;
-
-use crate::audio::{audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311};
+use log::{error, info};
 
 type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::NullMutex<I2cDriver<'static>>>;
 pub struct XiaozhiAudioCodec {
     input_codec: Es7210<I2cProxy>,
     output_codec: Es8311<I2cProxy>,
+    input_enabled: bool,
+    output_enabled: bool,
+    output_volume: u8,
 }
 
 impl XiaozhiAudioCodec {
@@ -39,6 +45,9 @@ impl XiaozhiAudioCodec {
         Self {
             input_codec: es7210,
             output_codec: es8311,
+            input_enabled: false,
+            output_enabled: false,
+            output_volume: 0,
         }
     }
 }
@@ -50,6 +59,10 @@ impl AudioCodec for XiaozhiAudioCodec {
     }
 
     fn enable_input(&mut self, enable: bool) -> Result<(), anyhow::Error> {
+        if enable == self.input_enabled {
+            return Ok(());
+        }
+
         if enable {
             self.input_codec.enable()?;
         } else {
@@ -59,11 +72,38 @@ impl AudioCodec for XiaozhiAudioCodec {
     }
 
     fn enable_output(&mut self, enable: bool) -> Result<(), anyhow::Error> {
+        if enable == self.output_enabled {
+            return Ok(());
+        }
         if enable {
             self.output_codec.enable()?;
         } else {
             self.output_codec.disable()?;
         }
         Ok(())
+    }
+
+    fn input_enabled(&self) -> bool {
+        return self.input_enabled;
+    }
+
+    fn output_enabled(&self) -> bool {
+        return self.output_enabled;
+    }
+
+    fn start(&mut self) {
+        match NvsSetting::new("audio") {
+            Ok(setting) => {
+                if let Some(volume) = setting.get_u8("output_volume") {
+                    self.output_volume = volume;
+                }
+            }
+            Err(_) => {
+                error!("Failed to get audio setting");
+            }
+        }
+        self.enable_input(true);
+        self.enable_output(true);
+        info!("Audio codec started");
     }
 }

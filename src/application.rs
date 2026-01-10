@@ -4,6 +4,7 @@ use std::{
         mpsc::{channel, Receiver, Sender},
         MutexGuard, OnceLock,
     },
+    thread,
 };
 
 use anyhow::{Error, Result};
@@ -16,6 +17,10 @@ use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
 use log::{error, info};
 
 use crate::{
+    audio::{
+        codec::audio_codec::AudioCodec,
+        processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
+    },
     axp173::{Axp173, Ldo},
     boards::{board::Board, jianglian_s3cam_board},
     common::{
@@ -40,6 +45,7 @@ pub struct Application {
     inner_receiver: Receiver<XzEvent>,
     aec_mode: AecMode,
     listening_mode: ListeningMode,
+    audio_processor: NoAudioProcessor,
 }
 
 impl Application {
@@ -86,6 +92,9 @@ impl Application {
     pub fn start(&mut self) -> Result<(), Error> {
         self.set_device_state(DeviceState::Starting);
 
+        let codec = self.board.get_audio_codec();
+        codec.start();
+
         let sender = self.inner_sender.clone();
         self.protocol.on_incoming_text(move |text| {
             info!("Received text message: {}", text);
@@ -94,6 +103,16 @@ impl Application {
             }
             Ok(())
         })?;
+
+        // 启动一个线程来读取音频数据
+        const THREAD_STACK_SIZE: usize = 96 * 1024;
+        let thread_builder = thread::Builder::new()
+            .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
+            .stack_size(THREAD_STACK_SIZE);
+        let codec = self.board.get_audio_codec();
+        thread_builder.spawn(move || {
+            audio_loop(codec);
+        });
 
         info!("开始处理内部事件 ...");
         // 处理内部事件
@@ -170,7 +189,40 @@ impl Application {
         if self.state == state {
             return;
         }
+        let previous_state = self.state.clone();
         self.state = state;
+
+        match self.state {
+            DeviceState::Idle => todo!(),
+            DeviceState::Activating => todo!(),
+            DeviceState::WifiConfiguring => todo!(),
+            DeviceState::Connecting => todo!(),
+            // DeviceState::DeviceStateAudioTesting => todo!(),
+            DeviceState::Speaking => todo!(),
+            DeviceState::Listening => {
+                info!(
+                    "Listening state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+                if !self.audio_processor.is_running() {
+                    self.protocol
+                        .send_start_linstening(self.listening_mode.clone());
+                    // TODO::
+                    // if (previous_state == kDeviceStateSpeaking) {
+                    //     audio_decode_queue_.clear();
+                    //     audio_decode_cv_.notify_all();
+                    //     // FIXME: Wait for the speaker to empty the buffer
+                    //     vTaskDelay(pdMS_TO_TICKS(120));
+                    // }
+                    // opus_encoder_->ResetState();
+                    // audio_processor_->Start(); //启动音频处理器。
+                    // wake_word_->StopDetection();
+                    self.audio_processor.start();
+                }
+            }
+            DeviceState::Starting => todo!(),
+            _ => {}
+        }
     }
 
     fn set_listening_mode(&mut self, mode: ListeningMode) {
@@ -266,3 +318,5 @@ impl Application {
         // }
     }
 }
+
+fn audio_loop(codec: &mut dyn AudioCodec) {}

@@ -4,19 +4,19 @@ pub enum AbortReason {
     WakeWordDetected,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum ListeningMode {
     AutoStop,
     Realtime,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum AecMode {
     Off,
     On,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum DeviceState {
     Idle,
     Activating,

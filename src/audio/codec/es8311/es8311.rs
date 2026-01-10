@@ -1,5 +1,5 @@
 // src/es8311.rs
-use crate::audio::es8311::reg::*;
+use crate::audio::codec::es8311::reg::*;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
 // 定义错误类型，这里我们直接用I2C的错误类型

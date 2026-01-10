@@ -16,7 +16,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use log::info;
 
 use crate::{
-    audio::xiaozhi_audio_codec::XiaozhiAudioCodec,
+    audio::codec::{audio_codec::AudioCodec, xiaozhi_audio_codec::XiaozhiAudioCodec},
     axp173::{Axp173, Ldo},
     boards::board::Board,
     common::{event::XzEvent, gpio_button::Button},
@@ -189,5 +189,9 @@ impl Board for JiangLianS3CamBoard {
 
     fn get_wifi_driver(&self) -> &Self::WifiDriver {
         &self.wifi_driver
+    }
+
+    fn get_audio_codec(&mut self) -> &mut dyn AudioCodec {
+        return &mut self.audio_codec;
     }
 }

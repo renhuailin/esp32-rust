@@ -4,7 +4,7 @@ use esp_idf_svc::eventloop::{
     EspEvent, EspEventDeserializer, EspEventPostData, EspEventSerializer, EspEventSource,
 };
 
-use crate::audio::AudioStreamPacket;
+use crate::audio::codec::AudioStreamPacket;
 
 pub const WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT: u32 = 1;
 

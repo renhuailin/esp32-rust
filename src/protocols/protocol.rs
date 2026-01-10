@@ -1,7 +1,9 @@
 use anyhow::{Error, Result};
-use esp_idf_svc::handle;
 
-use crate::{audio::AudioStreamPacket, common::enums::AbortReason};
+use crate::{
+    audio::codec::AudioStreamPacket,
+    common::enums::{AbortReason, ListeningMode},
+};
 pub trait Protocol {
     fn send_text(&mut self, text: &str) -> Result<()>;
     fn send_audio(&mut self, audio: &AudioStreamPacket) -> Result<()>;
@@ -19,4 +21,6 @@ pub trait Protocol {
     fn is_audio_channel_opened(&self) -> bool;
 
     fn send_abort_speaking(&mut self, reason: AbortReason) -> Result<(), Error>;
+
+    fn send_start_linstening(&mut self, listening_mode: ListeningMode) -> Result<(), Error>;
 }

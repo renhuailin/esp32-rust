@@ -1,6 +1,6 @@
 use anyhow::Error;
 
-use crate::wifi::WifiStation;
+use crate::{audio::codec::audio_codec::AudioCodec, wifi::WifiStation};
 
 // 定义主板的抽象
 pub trait Board {
@@ -15,6 +15,8 @@ pub trait Board {
 
     fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
+
+    fn get_audio_codec(&mut self) -> &mut dyn AudioCodec;
 
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;

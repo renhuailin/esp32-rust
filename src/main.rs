@@ -39,10 +39,10 @@ use log::{error, info, warn};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
 use xiaoxin_esp32::application::{Application, ApplicationConfig};
-use xiaoxin_esp32::audio::es7210::es7210::Es7210;
-use xiaoxin_esp32::audio::opus::decoder::OpusAudioDecoder;
-use xiaoxin_esp32::audio::opus::encoder::OpusAudioEncoder;
-use xiaoxin_esp32::audio::{
+use xiaoxin_esp32::audio::codec::es7210::es7210::Es7210;
+use xiaoxin_esp32::audio::codec::opus::decoder::OpusAudioDecoder;
+use xiaoxin_esp32::audio::codec::opus::encoder::OpusAudioEncoder;
+use xiaoxin_esp32::audio::codec::{
     AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE, I2S_MCLK_MULTIPLE_256, MAX_AUDIO_PACKETS_IN_QUEUE,
     OPUS_FRAME_DURATION_MS,
 };
@@ -305,7 +305,7 @@ fn main1() -> Result<()> {
     */
 
     //初始化es8311音频解码器
-    let mut es8311 = audio::es8311::Es8311::new(es8311_i2c_proxy);
+    let mut es8311 = audio::codec::es8311::Es8311::new(es8311_i2c_proxy);
 
     // match es8311.read_u8(0xFD) {
     //     Ok(chip_id) => {

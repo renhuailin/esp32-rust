@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    sync::{mpsc::Sender, Mutex, MutexGuard},
+    sync::{mpsc::Sender, Arc, Mutex, MutexGuard},
 };
 
 use anyhow::{Error, Ok, Result};
@@ -29,7 +29,7 @@ use shared_bus::{BusManager, BusManagerStd};
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
     display: Box<dyn Display>,
-    audio_codec: XiaozhiAudioCodec,
+    audio_codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     bus_manager: &'static BusManager<Mutex<I2cDriver<'static>>>,
     touch_button: &'static mut Button,
     volume_button: &'static mut Button,
@@ -102,7 +102,7 @@ impl JiangLianS3CamBoard {
         Ok(Self {
             wifi_driver,
             display: Box::new(display),
-            audio_codec,
+            audio_codec: Arc::new(Mutex::new(audio_codec)),
             bus_manager,
             touch_button,
             volume_button,
@@ -197,7 +197,7 @@ impl Board for JiangLianS3CamBoard {
         &self.wifi_driver
     }
 
-    fn get_audio_codec(&mut self) -> &mut dyn AudioCodec {
-        return &mut self.audio_codec;
+    fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>> {
+        return Arc::clone(&self.audio_codec);
     }
 }

@@ -92,8 +92,8 @@ impl Application {
 
     pub fn start(&mut self) -> Result<(), Error> {
         self.set_device_state(DeviceState::Starting);
-        let codec = self.board.get_audio_codec();
-        let codec_arc = Arc::new(Mutex::new(codec));
+        let codec_arc = self.board.get_audio_codec();
+        // let codec_arc = Arc::new(Mutex::new(codec));
 
         // let codec = self.board.get_audio_codec();
         codec_arc.lock().unwrap().start();
@@ -112,9 +112,9 @@ impl Application {
         let thread_builder = thread::Builder::new()
             .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);
-        let codec1 = Arc::clone(&codec_arc);
-        thread_builder.spawn(|| {
-            audio_loop(codec1);
+        let codec_clone = Arc::clone(&codec_arc);
+        thread_builder.spawn(move || {
+            audio_loop(codec_clone);
         });
 
         info!("开始处理内部事件 ...");
@@ -233,7 +233,7 @@ impl Application {
         self.set_device_state(DeviceState::Listening);
     }
     fn toggle_device_state(&mut self) {
-        //把下面的 C++ 代码转换为 Rust 代码
+        //把下面的 C ++ 代码转换为 Rust 代码
         match self.state {
             DeviceState::Activating => {
                 self.set_device_state(DeviceState::Idle);
@@ -322,7 +322,7 @@ impl Application {
     }
 }
 
-fn audio_loop(mut audio_codec: Arc<Mutex<&mut (dyn AudioCodec + 'static)>>) {
+fn audio_loop(audio_codec: Arc<Mutex<dyn AudioCodec>>) {
     let mut codec = audio_codec.lock().unwrap();
     codec.set_output_volume(50);
 }

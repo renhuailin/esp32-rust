@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::Error;
 
 use crate::{audio::codec::audio_codec::AudioCodec, wifi::WifiStation};
@@ -16,7 +18,7 @@ pub trait Board {
     fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
 
-    fn get_audio_codec(&mut self) -> &mut dyn AudioCodec;
+    fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>>;
 
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;

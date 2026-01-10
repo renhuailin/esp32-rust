@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    sync::{mpsc::Sender, MutexGuard},
+    sync::{mpsc::Sender, Mutex, MutexGuard},
 };
 
 use anyhow::{Error, Ok, Result};
@@ -24,13 +24,13 @@ use crate::{
     protocols::websocket::ws_protocol::WebSocketProtocol,
     wifi::{self, Esp32WifiDriver, WifiStation},
 };
-use shared_bus::{BusManager, BusManagerSimple};
+use shared_bus::{BusManager, BusManagerStd};
 
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
     display: Box<dyn Display>,
     audio_codec: XiaozhiAudioCodec,
-    bus_manager: &'static BusManager<shared_bus::NullMutex<I2cDriver<'static>>>,
+    bus_manager: &'static BusManager<Mutex<I2cDriver<'static>>>,
     touch_button: &'static mut Button,
     volume_button: &'static mut Button,
 
@@ -75,7 +75,13 @@ impl JiangLianS3CamBoard {
 
         let i2c_driver = I2cDriver::new(i2c, sda, scl, &config).unwrap();
 
-        let manager_box = Box::new(BusManagerSimple::new(i2c_driver));
+        // let bus_manager: shared_bus::BusManager<Mutex<I2cDriver<'_>>> =
+        //     shared_bus::BusManager::new(i2c_driver);
+
+        // let manager_box = Box::new(BusManagerSimple::new(i2c_driver));
+        let manager_box = Box::new(BusManagerStd::new(i2c_driver));
+        // let manager_box = Box::new(BusManagerSimple::new(i2c_driver));
+        // let manager_box = Box::new(BusManager::new(i2c_driver));
 
         // 2. 使用 Box::leak()。
         //    这会消耗掉 Box，返回一个 &'static mut BusManager... 引用。

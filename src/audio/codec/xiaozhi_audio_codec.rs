@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use crate::{
     audio::codec::{audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311},
     setting::nvs_setting::NvsSetting,
@@ -6,7 +8,7 @@ use anyhow::Result;
 use esp_idf_hal::{delay::Delay, i2c::I2cDriver};
 use log::{error, info};
 
-type I2cProxy = shared_bus::I2cProxy<'static, shared_bus::NullMutex<I2cDriver<'static>>>;
+type I2cProxy = shared_bus::I2cProxy<'static, Mutex<I2cDriver<'static>>>;
 pub struct XiaozhiAudioCodec {
     input_codec: Es7210<I2cProxy>,
     output_codec: Es8311<I2cProxy>,

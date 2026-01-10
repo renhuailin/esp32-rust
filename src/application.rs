@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{
         mpsc::{channel, Receiver, Sender},
-        MutexGuard, OnceLock,
+        Arc, Mutex, MutexGuard,
     },
     thread,
 };
@@ -84,6 +84,7 @@ impl Application {
             inner_receiver,
             aec_mode: AecMode::Off,
             listening_mode: ListeningMode::AutoStop,
+            audio_processor: NoAudioProcessor::new(),
         };
 
         Ok(instance)
@@ -91,9 +92,11 @@ impl Application {
 
     pub fn start(&mut self) -> Result<(), Error> {
         self.set_device_state(DeviceState::Starting);
-
         let codec = self.board.get_audio_codec();
-        codec.start();
+        let codec_arc = Arc::new(Mutex::new(codec));
+
+        // let codec = self.board.get_audio_codec();
+        codec_arc.lock().unwrap().start();
 
         let sender = self.inner_sender.clone();
         self.protocol.on_incoming_text(move |text| {
@@ -109,9 +112,9 @@ impl Application {
         let thread_builder = thread::Builder::new()
             .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);
-        let codec = self.board.get_audio_codec();
-        thread_builder.spawn(move || {
-            audio_loop(codec);
+        let codec1 = Arc::clone(&codec_arc);
+        thread_builder.spawn(|| {
+            audio_loop(codec1);
         });
 
         info!("开始处理内部事件 ...");
@@ -319,4 +322,7 @@ impl Application {
     }
 }
 
-fn audio_loop(codec: &mut dyn AudioCodec) {}
+fn audio_loop(mut audio_codec: Arc<Mutex<&mut (dyn AudioCodec + 'static)>>) {
+    let mut codec = audio_codec.lock().unwrap();
+    codec.set_output_volume(50);
+}

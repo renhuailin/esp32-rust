@@ -53,7 +53,8 @@ pub enum XzEvent {
     CloseAudioChannel,
     WebSocketConnected,
     ServerHelloMessageReceived(String), // 收到服务器返回的hello消息
-    SendAudioEvent,                     // 发送音频数据事件
+    AddAudioPacketToQueue(AudioStreamPacket), //add encoded audio packet to the wait-for-sending queue
+    SendAudioEvent,                           // 发送音频数据事件
     AudioDataReceived(AudioStreamPacket),
     WebsocketTextMessageReceived(String),
 }

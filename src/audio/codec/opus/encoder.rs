@@ -14,6 +14,10 @@ pub struct OpusAudioEncoder {
     in_buffer: Vec<i16>,
 }
 
+// 定义一个unsafe impl来告诉编译器该类型可以安全地跨越线程边界
+// 这是因为我们只在单个进程中使用OpusEncoder，且遵循了正确的内存管理规则
+unsafe impl Send for OpusAudioEncoder {}
+
 impl OpusAudioEncoder {
     /// 创建一个新的 Opus 音频编码器实例
     ///

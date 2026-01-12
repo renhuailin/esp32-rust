@@ -14,11 +14,14 @@ use esp_idf_hal::{
     peripheral,
 };
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::{
     audio::{
-        codec::{audio_codec::AudioCodec, opus::encoder::OpusAudioEncoder, OPUS_FRAME_DURATION_MS},
+        codec::{
+            audio_codec::AudioCodec, opus::encoder::OpusAudioEncoder, AudioStreamPacket,
+            MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
+        },
         processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
     },
     axp173::{Axp173, Ldo},
@@ -47,6 +50,7 @@ pub struct Application {
     aec_mode: AecMode,
     listening_mode: ListeningMode,
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
+    audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
 }
 
 impl Application {
@@ -76,6 +80,11 @@ impl Application {
         let mac_address = board.get_wifi_driver().get_mac_address()?;
         let protocol = WebSocketProtocol::new(mac_address.as_str());
 
+        //待发送的音频队列
+        let audio_packet_queue = Arc::new(Mutex::new(
+            VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
+        ));
+
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
@@ -86,6 +95,7 @@ impl Application {
             aec_mode: AecMode::Off,
             listening_mode: ListeningMode::AutoStop,
             audio_processor: Arc::new(Mutex::new(NoAudioProcessor::new(16000))),
+            audio_packet_queue,
         };
 
         Ok(instance)
@@ -118,7 +128,7 @@ impl Application {
         let sample_rate = 16000; //# 采样率固定为16000Hz
         let channels = 2; //# 单声道
         info!("create opus encoder");
-        let mut opus_encoder = Arc::new(Mutex::new(
+        let opus_encoder = Arc::new(Mutex::new(
             OpusAudioEncoder::new(
                 sample_rate,
                 channels,
@@ -127,17 +137,33 @@ impl Application {
             .unwrap(),
         ));
 
+        let audio_packet_queue_arc = Arc::clone(&self.audio_packet_queue);
+
+        let inner_sender = self.inner_sender.clone();
+
         let audio_processor = Arc::clone(&self.audio_processor);
 
         audio_processor
             .lock()
             .unwrap()
             .on_output(Box::new(move |data| {
-                // let encoder = Arc::clone(&opus_encoder);
                 println!("Received audio data: {:?}", data);
-                // if let Err(e) = self.protocol.send_audio_data(data) {
-                //     log::error!("Failed to send audio data: {:?}", e);
-                // }
+                let encoder = Arc::clone(&opus_encoder);
+                let sender = inner_sender.clone();
+
+                encoder
+                    .lock()
+                    .unwrap()
+                    .encode(data, &mut move |opus_data: Vec<u8>| {
+                        let packet = AudioStreamPacket {
+                            sample_rate: 16000,
+                            frame_duration: 60,
+                            timestamp: 0,
+                            payload: opus_data,
+                        };
+                        sender.send(XzEvent::AddAudioPacketToQueue(packet)).unwrap();
+                    })
+                    .unwrap();
             }));
 
         let _ = thread_builder.spawn(move || {
@@ -182,12 +208,38 @@ impl Application {
                         // XzEvent::ServerHelloMessageReceived => {
                         //     info!("Worker thread: Server hello message received.");
                         // }
-                        // XzEvent::SendAudioEvent => {
-                        //     info!("SendAudioEvent not implemented yet");
-                        // }
+                        XzEvent::SendAudioEvent => {
+                            info!("SendAudioEvent not implemented yet");
+
+                            let packets = {
+                                let mut queue = audio_packet_queue_arc.lock().unwrap();
+                                // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+                                // 这完全等同于 C++ 的 std::move
+                                std::mem::take(&mut *queue)
+                            };
+
+                            // 此时锁已经释放了
+                            for packet in packets {
+                                self.protocol.send_audio(&packet)?;
+                            }
+                        }
                         // XzEvent::AudioDataReceived(audio_stream_packet) => {
                         //     info!("AudioDataReceived not implemented yet");
                         // }
+                        XzEvent::AddAudioPacketToQueue(packet) => {
+                            let audio_packet_queue = Arc::clone(&audio_packet_queue_arc);
+                            let mut queue = audio_packet_queue.lock().unwrap();
+
+                            // --- 核心逻辑在这里 ---
+                            // 2. 检查队列是否已满
+                            if queue.len() >= MAX_AUDIO_PACKETS_IN_QUEUE {
+                                warn!("Too many audio packets in queue, drop the newest packet");
+                                continue;
+                            }
+
+                            // 4. 将新元素推入队列的尾部
+                            queue.push_back(packet);
+                        }
                         _ => {
                             info!("Received unhandled event: {:?}", event);
                         }
@@ -195,11 +247,10 @@ impl Application {
                 }
                 Err(_) => {
                     info!("Event channel closed, exiting event loop");
-                    break;
                 }
             }
         }
-        info!("application start 函数返回！");
+        // info!("application start 函数返回！");
         Ok(())
     }
 

@@ -1,10 +1,16 @@
 use crate::audio::processor::audio_processor::AudioProcessor;
 
-pub struct NoAudioProcessor {}
+pub struct NoAudioProcessor {
+    input_sample_rate: u32,
+    audio_output_callback: Option<Box<dyn FnMut(Vec<i16>) + Send + 'static>>,
+}
 
 impl NoAudioProcessor {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            input_sample_rate: sample_rate,
+            audio_output_callback: None,
+        }
     }
 }
 
@@ -14,7 +20,9 @@ impl AudioProcessor for NoAudioProcessor {
     }
 
     fn feed(&mut self, data: &[i16]) {
-        todo!()
+        if let Some(callback) = &mut self.audio_output_callback {
+            callback(data.to_vec());
+        }
     }
 
     fn start(&mut self) {
@@ -28,20 +36,19 @@ impl AudioProcessor for NoAudioProcessor {
     fn is_running(&self) -> bool {
         todo!()
     }
-
-    fn on_output(&mut self, callback: impl FnMut(Vec<i16>) + Send + 'static) {
-        todo!()
-    }
-
-    fn on_vad_state_change(&mut self, callback: impl FnMut(bool) + Send + 'static) {
-        todo!()
-    }
-
     fn get_feed_size(&self) -> usize {
-        todo!()
+        return (30 * self.input_sample_rate / 1000).try_into().unwrap();
     }
 
     fn enable_device_aec(&mut self, enable: bool) {
+        todo!()
+    }
+
+    fn on_output(&mut self, callback: Box<dyn FnMut(Vec<i16>) + Send + 'static>) {
+        self.audio_output_callback = Some(callback);
+    }
+
+    fn on_vad_state_change(&mut self, callback: Box<dyn FnMut(bool) + Send + 'static>) {
         todo!()
     }
 }

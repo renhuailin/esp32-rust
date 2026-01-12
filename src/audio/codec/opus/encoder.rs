@@ -5,6 +5,7 @@ use esp_idf_sys::es32_component_opus::{
 use log::{error, info};
 
 const MAX_OPUS_PACKET_SIZE: usize = 3000;
+
 pub struct OpusAudioEncoder {
     encoder: *mut OpusEncoder,
     // sample_rate: i32,

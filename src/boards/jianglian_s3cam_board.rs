@@ -7,7 +7,10 @@ use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
     gpio::AnyInputPin,
     i2c::{I2cConfig, I2cDriver},
-    i2s::{I2sBiDir, I2sDriver},
+    i2s::{
+        config::{DataBitWidth, StdConfig},
+        I2sBiDir, I2sDriver,
+    },
     peripheral,
     prelude::Peripherals,
     spi::SpiDriver,
@@ -97,7 +100,30 @@ impl JiangLianS3CamBoard {
         let es8311_i2c_proxy = bus_manager.acquire_i2c();
         let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
-        let audio_codec = XiaozhiAudioCodec::new(es8311_i2c_proxy, es7210_i2c_proxy);
+        // 初始化I2S
+        let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
+
+        let bclk = pins.gpio42;
+        let din = pins.gpio45;
+        let dout = pins.gpio39;
+        let mclk = pins.gpio41.into();
+        let ws = pins.gpio40;
+
+        // let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
+
+        // i2s_config
+        let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+            peripherals.i2s0,
+            &std_config,
+            bclk,
+            din,
+            dout,
+            mclk,
+            ws,
+        )
+        .unwrap();
+
+        let audio_codec = XiaozhiAudioCodec::new(es8311_i2c_proxy, es7210_i2c_proxy, i2s_driver);
 
         Ok(Self {
             wifi_driver,

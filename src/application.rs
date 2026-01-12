@@ -18,12 +18,13 @@ use log::{error, info};
 
 use crate::{
     audio::{
-        codec::audio_codec::AudioCodec,
+        codec::{audio_codec::AudioCodec, opus::encoder::OpusAudioEncoder, OPUS_FRAME_DURATION_MS},
         processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
     },
     axp173::{Axp173, Ldo},
     boards::{board::Board, jianglian_s3cam_board},
     common::{
+        converter::bytes_to_i16_slice,
         enums::{AbortReason, AecMode, DeviceState, ListeningMode},
         event::XzEvent,
     },
@@ -45,7 +46,7 @@ pub struct Application {
     inner_receiver: Receiver<XzEvent>,
     aec_mode: AecMode,
     listening_mode: ListeningMode,
-    audio_processor: NoAudioProcessor,
+    audio_processor: Arc<Mutex<dyn AudioProcessor>>,
 }
 
 impl Application {
@@ -84,7 +85,7 @@ impl Application {
             inner_receiver,
             aec_mode: AecMode::Off,
             listening_mode: ListeningMode::AutoStop,
-            audio_processor: NoAudioProcessor::new(),
+            audio_processor: Arc::new(Mutex::new(NoAudioProcessor::new(16000))),
         };
 
         Ok(instance)
@@ -113,8 +114,34 @@ impl Application {
             .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);
         let codec_clone = Arc::clone(&codec_arc);
-        thread_builder.spawn(move || {
-            audio_loop(codec_clone);
+
+        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let channels = 2; //# 单声道
+        info!("create opus encoder");
+        let mut opus_encoder = Arc::new(Mutex::new(
+            OpusAudioEncoder::new(
+                sample_rate,
+                channels,
+                OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+            )
+            .unwrap(),
+        ));
+
+        let audio_processor = Arc::clone(&self.audio_processor);
+
+        audio_processor
+            .lock()
+            .unwrap()
+            .on_output(Box::new(move |data| {
+                // let encoder = Arc::clone(&opus_encoder);
+                println!("Received audio data: {:?}", data);
+                // if let Err(e) = self.protocol.send_audio_data(data) {
+                //     log::error!("Failed to send audio data: {:?}", e);
+                // }
+            }));
+
+        let _ = thread_builder.spawn(move || {
+            audio_loop(codec_clone, audio_processor);
         });
 
         info!("开始处理内部事件 ...");
@@ -207,9 +234,10 @@ impl Application {
                     "Listening state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
-                if !self.audio_processor.is_running() {
+                if !self.audio_processor.lock().unwrap().is_running() {
                     self.protocol
-                        .send_start_linstening(self.listening_mode.clone());
+                        .send_start_linstening(self.listening_mode.clone())
+                        .unwrap();
                     // TODO::
                     // if (previous_state == kDeviceStateSpeaking) {
                     //     audio_decode_queue_.clear();
@@ -220,7 +248,7 @@ impl Application {
                     // opus_encoder_->ResetState();
                     // audio_processor_->Start(); //启动音频处理器。
                     // wake_word_->StopDetection();
-                    self.audio_processor.start();
+                    self.audio_processor.lock().unwrap().start();
                 }
             }
             DeviceState::Starting => todo!(),
@@ -322,7 +350,75 @@ impl Application {
     }
 }
 
-fn audio_loop(audio_codec: Arc<Mutex<dyn AudioCodec>>) {
-    let mut codec = audio_codec.lock().unwrap();
-    codec.set_output_volume(50);
+fn audio_loop(
+    audio_codec: Arc<Mutex<dyn AudioCodec>>,
+    audio_processor: Arc<Mutex<dyn AudioProcessor>>,
+) {
+    // let mut codec = audio_codec.lock().unwrap();
+    // codec.set_output_volume(50);
+    // let codec_arc = Arc::clone(&audio_codec);
+    // let codec_arc1 = Arc::clone(&audio_codec);
+    let audio_processor_arc = Arc::clone(&audio_processor);
+
+    const READ_CHUNK_SIZE: usize = 1024;
+    let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
+    loop {
+        start_audio_input(
+            Arc::clone(&audio_codec),
+            audio_processor_arc.clone(),
+            &mut read_buffer,
+        );
+
+        let codec_arc = Arc::clone(&audio_codec);
+        if codec_arc.lock().unwrap().output_enabled() {
+            start_audio_output(codec_arc, audio_processor_arc.clone());
+        }
+    }
+}
+
+fn start_audio_output(
+    codec_arc: Arc<Mutex<dyn AudioCodec + 'static>>,
+    audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
+) {
+    todo!()
+}
+
+fn start_audio_input(
+    codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+    audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
+    mut read_buffer: &mut Vec<u8>,
+) {
+    // if (audio_processor_->IsRunning())
+    // {
+    //     std::vector<int16_t> data;
+    //     int samples = audio_processor_->GetFeedSize();
+    //     if (samples > 0)
+    //     {
+    //         if (ReadAudio(data, 16000, samples))
+    //         {
+    //             audio_processor_->Feed(data);
+    //             return;
+    //         }
+    //     }
+    // }
+
+    // vTaskDelay(pdMS_TO_TICKS(OPUS_FRAME_DURATION_MS / 2));
+    if audio_processor.lock().unwrap().is_running() {
+        let samples = audio_processor.lock().unwrap().get_feed_size();
+        // let mut data = vec![0; samples];
+        let codec_arc = Arc::clone(&codec);
+
+        if samples > 0 {
+            let bytes_read = codec_arc
+                .lock()
+                .unwrap()
+                .read_audio_data(&mut read_buffer)
+                .unwrap();
+
+            // 因为录音数据是8位PCM数据，opus_encoder 需要16位的 Vec,所以需转换下。
+            let bytes_to_i16_result = bytes_to_i16_slice(&read_buffer[..bytes_read]).unwrap();
+
+            audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
+        }
+    }
 }

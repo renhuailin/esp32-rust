@@ -9,4 +9,6 @@ pub trait AudioCodec: Send {
     fn output_enabled(&self) -> bool;
 
     fn start(&mut self);
+
+    fn read_audio_data(&mut self, buffer: &mut Vec<u8>) -> Result<usize, Error>;
 }

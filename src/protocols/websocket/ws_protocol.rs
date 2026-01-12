@@ -402,7 +402,7 @@ fn handle_event(
                     payload: binary.to_vec(),
                 };
 
-                sender.send(XzEvent::AudioDataReceived(packet)).unwrap();
+                sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
             }
             WebSocketEventType::Ping => {
                 info!("Websocket ping");

@@ -19,8 +19,10 @@ use log::{error, info, warn};
 use crate::{
     audio::{
         codec::{
-            audio_codec::AudioCodec, opus::encoder::OpusAudioEncoder, AudioStreamPacket,
-            MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
+            self,
+            audio_codec::AudioCodec,
+            opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
+            AudioStreamPacket, MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
         processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
     },
@@ -43,19 +45,26 @@ pub struct ApplicationConfig {
 pub struct Application {
     state: DeviceState,
     protocol: WebSocketProtocol,
-    device_id: String,
     board: Box<dyn Board<WifiDriver = Esp32WifiDriver>>,
     inner_sender: Sender<XzEvent>,
     inner_receiver: Receiver<XzEvent>,
     aec_mode: AecMode,
     listening_mode: ListeningMode,
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
-    audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
+    audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待发送的音频队列
+    audio_decode_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待解码的音频队列
+    busy_decoding_audio: Arc<Mutex<bool>>,                       //正在解码音频
+
+    decode_task_sender: Sender<XzEvent>,
+    decode_task_receiver: Option<Receiver<XzEvent>>,
 }
 
 impl Application {
     pub fn new() -> Result<Self> {
         let (inner_sender, inner_receiver): (Sender<XzEvent>, Receiver<XzEvent>) = channel();
+
+        let (decode_task_sender, decode_task_receiver): (Sender<XzEvent>, Receiver<XzEvent>) =
+            channel();
 
         let mut board = Box::new(jianglian_s3cam_board::JiangLianS3CamBoard::new()?);
 
@@ -84,18 +93,25 @@ impl Application {
         let audio_packet_queue = Arc::new(Mutex::new(
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
+        let audio_decode_queue = Arc::new(Mutex::new(
+            VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
+        ));
 
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
-            device_id: mac_address,
+            // device_id: mac_address,
             board,
             inner_sender,
             inner_receiver,
+            decode_task_sender,
+            decode_task_receiver: Some(decode_task_receiver),
             aec_mode: AecMode::Off,
             listening_mode: ListeningMode::AutoStop,
             audio_processor: Arc::new(Mutex::new(NoAudioProcessor::new(16000))),
             audio_packet_queue,
+            audio_decode_queue,
+            busy_decoding_audio: Arc::new(Mutex::new(false)),
         };
 
         Ok(instance)
@@ -113,6 +129,14 @@ impl Application {
         self.protocol.on_incoming_text(move |text| {
             info!("Received text message: {}", text);
             if let Err(e) = sender.send(XzEvent::WebsocketTextMessageReceived(text.to_string())) {
+                log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
+            }
+            Ok(())
+        })?;
+
+        let sender1 = self.inner_sender.clone();
+        self.protocol.on_incoming_audio(move |packet| {
+            if let Err(e) = sender1.send(XzEvent::AudioPacketReceived(packet.clone())) {
                 log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
             }
             Ok(())
@@ -170,6 +194,8 @@ impl Application {
             audio_loop(codec_clone, audio_processor);
         });
 
+        self.start_output_audio();
+
         info!("开始处理内部事件 ...");
         // 处理内部事件
         loop {
@@ -209,8 +235,6 @@ impl Application {
                         //     info!("Worker thread: Server hello message received.");
                         // }
                         XzEvent::SendAudioEvent => {
-                            info!("SendAudioEvent not implemented yet");
-
                             let packets = {
                                 let mut queue = audio_packet_queue_arc.lock().unwrap();
                                 // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
@@ -223,9 +247,16 @@ impl Application {
                                 self.protocol.send_audio(&packet)?;
                             }
                         }
-                        // XzEvent::AudioDataReceived(audio_stream_packet) => {
-                        //     info!("AudioDataReceived not implemented yet");
-                        // }
+                        XzEvent::AudioPacketReceived(audio_stream_packet) => {
+                            if self.state == DeviceState::Speaking
+                                && audio_packet_queue_arc.lock().unwrap().len()
+                                    < MAX_AUDIO_PACKETS_IN_QUEUE
+                            {
+                                let mut audio_decode_queue =
+                                    self.audio_decode_queue.lock().unwrap();
+                                audio_decode_queue.push_back(audio_stream_packet);
+                            }
+                        }
                         XzEvent::AddAudioPacketToQueue(packet) => {
                             let audio_packet_queue = Arc::clone(&audio_packet_queue_arc);
                             let mut queue = audio_packet_queue.lock().unwrap();
@@ -239,6 +270,10 @@ impl Application {
 
                             // 4. 将新元素推入队列的尾部
                             queue.push_back(packet);
+                            self.inner_sender
+                                .clone()
+                                .send(XzEvent::SendAudioEvent)
+                                .unwrap();
                         }
                         _ => {
                             info!("Received unhandled event: {:?}", event);
@@ -399,6 +434,62 @@ impl Application {
         //     });
         // }
     }
+
+    fn start_output_audio(&mut self) {
+        // 启动一个线程来decode audio数据
+        const THREAD_STACK_SIZE: usize = 96 * 1024;
+        let thread_builder = thread::Builder::new()
+            .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
+            .stack_size(THREAD_STACK_SIZE);
+        let codec = Arc::clone(&self.board.get_audio_codec());
+
+        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let channels = 2; //# 单声道
+        info!("create opus encoder");
+
+        let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
+
+        if let Some(rx) = self.decode_task_receiver.take() {
+            let _ = thread_builder.spawn(move || {
+                let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+                let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+                loop {
+                    match rx.recv() {
+                        Ok(event) => match event {
+                            XzEvent::AudioDecodeEvent => {
+                                let packets = {
+                                    let mut queue = audio_packet_queue_arc.lock().unwrap();
+                                    // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+                                    // 这完全等同于 C++ 的 std::move
+                                    std::mem::take(&mut *queue)
+                                };
+
+                                // 此时锁已经释放了
+                                for packet in packets {
+                                    // self.protocol.send_audio(&packet).unwrap();
+                                    decode_opus_audio(
+                                        codec.clone(),
+                                        &mut opus_decoder,
+                                        packet.payload,
+                                        &mut shared_pcm_buffer,
+                                    );
+                                }
+                            }
+                            _ => {
+                                info!("Received unhandled event: {:?}", event);
+                            }
+                        },
+                        Err(_) => {
+                            info!("Event channel closed, exiting event loop");
+                        }
+                    }
+                }
+                // info!("application start 函数返回！");
+            });
+        } else {
+            println!("Receiver already taken!");
+        }
+    }
 }
 
 fn audio_loop(
@@ -470,6 +561,66 @@ fn start_audio_input(
             let bytes_to_i16_result = bytes_to_i16_slice(&read_buffer[..bytes_read]).unwrap();
 
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
+        }
+    }
+}
+
+fn decode_opus_audio(
+    codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+    opus_decoder: &mut OpusAudioDecoder,
+    // mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>,
+    opus_data: Vec<u8>,
+    pcm_buffer: &mut Vec<i16>,
+) {
+    // let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 双声道
+
+    let decode_result = opus_decoder.decode(&opus_data);
+
+    // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
+    // let decode_result = decoder.decode(&opus_data);
+
+    match decode_result {
+        Ok(pcm_data) => {
+            info!("decode success.");
+            let is_stereo = channels == 2;
+
+            if !is_stereo {
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+                // 1. 清空旧数据，但保留容量（不释放内存）
+                pcm_buffer.clear();
+                pcm_buffer.resize(pcm_mono_data_len * 2, 0);
+                // let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_buffer[i * 2] = sample; // 左声道
+                    pcm_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_buffer.as_ptr() as *const u8,
+                        pcm_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+                // play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            } else {
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_data.as_ptr() as *const u8,
+                        pcm_data.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+            }
+        }
+        Err(e) => {
+            info!("Opus decode error: {:?}", e);
+            return;
         }
     }
 }

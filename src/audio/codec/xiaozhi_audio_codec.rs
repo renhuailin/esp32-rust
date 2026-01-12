@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Error, Result};
 use esp_idf_hal::{
-    delay::Delay,
+    delay::{Delay, BLOCK},
     i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
 };
@@ -120,8 +120,8 @@ impl AudioCodec for XiaozhiAudioCodec {
         i2s_driver.tx_enable().unwrap();
         i2s_driver.rx_enable().unwrap();
 
-        self.enable_input(true);
-        self.enable_output(true);
+        self.enable_input(true).unwrap();
+        self.enable_output(true).unwrap();
         info!("Audio codec started");
     }
 
@@ -130,5 +130,25 @@ impl AudioCodec for XiaozhiAudioCodec {
         let mut i2s_driver = i2s_driver_arc.lock().unwrap();
         let bytes_read = i2s_driver.read(&mut buffer, 50)?;
         return Ok(bytes_read);
+    }
+
+    fn output_data(&mut self, audio_data: &[u8]) -> Result<(), Error> {
+        const CHUNK_SIZE: usize = 4096;
+        let i2s_driver = self.i2s_driver.clone();
+        for chunk in audio_data.chunks(CHUNK_SIZE) {
+            // 4. 逐块写入I2S驱动
+            match i2s_driver.lock().unwrap().write(chunk, BLOCK) {
+                Ok(bytes_written) => {
+                    // 打印一些进度信息，方便调试
+                    info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                }
+                Err(e) => {
+                    // 如果在写入过程中出错，打印错误并跳出循环
+                    info!("I2S write error on a chunk: {:?}", e);
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }

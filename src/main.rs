@@ -868,7 +868,7 @@ fn main1() -> Result<()> {
                     }
                 }
             }
-            XzEvent::AudioDataReceived(audio_stream_packet) => {
+            XzEvent::AudioPacketReceived(audio_stream_packet) => {
                 info!("received audio data, play_opus_audio");
                 play_opus_audio(
                     decoder,
@@ -1052,7 +1052,7 @@ fn play_opus_audio(
     pcm_buffer: &mut Vec<i16>,
 ) {
     let sample_rate = 16000; //# 采样率固定为16000Hz
-    let channels = 2; //# 单声道
+    let channels = 2; //# 双声道
 
     // decoder = decoder.decode(sample_rate, channels);
 

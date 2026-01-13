@@ -99,7 +99,7 @@ where
                                                       // 4:0 ADC clock divide 0/1 – no divide 2 – divide by 2
 
         self.mic_select(self.input_mics)?;
-        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0xF, 10.0)?;
 
         //把clcok off的设置保存起来,在enbale的时候需要用到。
         self.clock_off_status = self.read_reg(ES7210_CLOCK_OFF_REG_01)?;
@@ -173,7 +173,7 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0x01, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0x01, 10.0)?;
 
         self.enabled = true;
 

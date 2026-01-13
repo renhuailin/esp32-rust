@@ -13,7 +13,7 @@ use esp_idf_hal::{
 use log::{error, info};
 
 type I2cProxy = shared_bus::I2cProxy<'static, Mutex<I2cDriver<'static>>>;
-
+const DEFAULT_OUTPUT_VOLUME: u8 = 30;
 pub struct XiaozhiAudioCodec {
     input_codec: Es7210<I2cProxy>,
     output_codec: Es8311<I2cProxy>,
@@ -21,6 +21,7 @@ pub struct XiaozhiAudioCodec {
     output_enabled: bool,
     output_volume: u8,
     i2s_driver: Arc<Mutex<I2sDriver<'static, I2sBiDir>>>,
+    input_reference: bool,
 }
 
 impl XiaozhiAudioCodec {
@@ -61,6 +62,7 @@ impl XiaozhiAudioCodec {
             output_enabled: false,
             output_volume: 0,
             i2s_driver: Arc::new(Mutex::new(i2s_driver)),
+            input_reference: true,
         }
     }
 }
@@ -108,11 +110,16 @@ impl AudioCodec for XiaozhiAudioCodec {
         match NvsSetting::new("audio") {
             Ok(setting) => {
                 if let Some(volume) = setting.get_u8("output_volume") {
-                    self.output_volume = volume;
+                    if volume <= 0 {
+                        self.output_volume = DEFAULT_OUTPUT_VOLUME;
+                    } else {
+                        self.output_volume = volume;
+                    }
                 }
             }
             Err(_) => {
                 error!("Failed to get audio setting");
+                self.output_volume = DEFAULT_OUTPUT_VOLUME;
             }
         }
         let i2s_driver_arc = self.i2s_driver.clone();
@@ -150,5 +157,9 @@ impl AudioCodec for XiaozhiAudioCodec {
             }
         }
         Ok(())
+    }
+
+    fn input_reference(&self) -> bool {
+        return self.input_reference;
     }
 }

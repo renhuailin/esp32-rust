@@ -107,15 +107,6 @@ impl WebSocketProtocol {
         }
         Ok(())
     }
-
-    pub fn close_audio_channel(&mut self) -> Result<(), Error> {
-        if let Some(_) = self.client.take() {
-            // client.close().unwrap();
-        }
-        self.is_connected = false;
-        *self.last_incoming_time.lock().unwrap() = None;
-        Ok(())
-    }
 }
 
 impl Protocol for WebSocketProtocol {
@@ -177,11 +168,13 @@ impl Protocol for WebSocketProtocol {
         // let internal_sender1 = self.internal_sender.clone();
         let last_incoming_time = self.last_incoming_time.clone();
 
-        let mut on_incoming_text_handler = self.on_incoming_text.take();
-        let mut on_incoming_audio_handler = self.on_incoming_audio.take();
+        // let mut on_incoming_text_handler = self.on_incoming_text.take();
+        // let mut on_incoming_audio_handler = self.on_incoming_audio.take();
 
         let inner_sender = self.internal_sender.clone();
         let external_sender = self.external_sender.clone();
+
+        *self.server_hello_received.lock().unwrap() = false;
         let server_hello_received = self.server_hello_received.clone();
         self.client = Some(Box::new(EspWebSocketClient::new(
             ws_url,
@@ -197,10 +190,16 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Connected => {
                             info!("Websocket connected");
-                            inner_sender.send(XzEvent::WebSocketConnected).unwrap();
+                            match inner_sender.send(XzEvent::WebSocketConnected) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("Error sending audio data: {:?}", e);
+                                }
+                            }
                         }
                         WebSocketEventType::Disconnected => {
                             info!("Websocket disconnected");
+                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Close(reason) => {
@@ -337,6 +336,17 @@ impl Protocol for WebSocketProtocol {
         Ok(true)
     }
 
+    fn close_audio_channel(&mut self) -> Result<(), Error> {
+        if let Some(_) = self.client.take() {
+            //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。
+        }
+        self.is_connected = false;
+        *self.last_incoming_time.lock().unwrap() = None;
+
+        // self.external_sender.send(XzEvent::WebSocketClosed).unwrap();
+        Ok(())
+    }
+
     fn on_incoming_text<F>(&mut self, handler: F) -> Result<(), Error>
     where
         F: FnMut(&str) -> Result<(), Error> + Send + 'static,
@@ -401,6 +411,7 @@ impl Protocol for WebSocketProtocol {
         let mode = match listening_mode {
             ListeningMode::AutoStop => "auto",
             ListeningMode::Realtime => "realtime",
+            ListeningMode::Manual => "manual",
         };
 
         let message = format!(

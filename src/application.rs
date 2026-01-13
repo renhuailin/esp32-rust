@@ -15,6 +15,7 @@ use esp_idf_hal::{
     peripheral,
 };
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
+use esp_idf_sys::es32_component_opus::OPUS_GET_INBAND_FEC_REQUEST;
 use log::{error, info, warn};
 
 use crate::{
@@ -128,6 +129,12 @@ impl Application {
         // let codec = self.board.get_audio_codec();
         codec_arc.lock().unwrap().start();
 
+        // self.protocol.set_on_close_handler(|| {
+        //     // self.board.set_save_power_mode(true);
+        //     self.set_device_state(DeviceState::Idle);
+        //     Ok(())
+        // });
+
         // let sender = self.inner_sender.clone();
         // self.protocol.on_incoming_text(move |text| {
         //     info!("Received text message: {}", text);
@@ -174,7 +181,7 @@ impl Application {
             .lock()
             .unwrap()
             .on_output(Box::new(move |data| {
-                println!("Received audio data: {:?}", data);
+                // println!("Received audio data: {:?}", data);
                 let encoder = Arc::clone(&opus_encoder);
                 let sender = inner_sender.clone();
 
@@ -182,6 +189,7 @@ impl Application {
                     .lock()
                     .unwrap()
                     .encode(data, &mut move |opus_data: Vec<u8>| {
+                        // info!("编码完成，add audio packet to queue");
                         let packet = AudioStreamPacket {
                             sample_rate: 16000,
                             frame_duration: 60,
@@ -210,38 +218,162 @@ impl Application {
                     match event {
                         XzEvent::BootButtonClicked => {
                             info!("Boot button clicked! current state: {:?}", self.state);
-                            if self.state == DeviceState::Idle
-                                && self.board.get_wifi_driver().is_connected().unwrap_or(false)
+                            if self.state == DeviceState::Starting
+                                && !self.board.get_wifi_driver().is_connected().unwrap_or(false)
                             {
-                                self.toggle_device_state();
+                                // TODO: 重置WiFi配置
+                                // self.reset_wifi_configuration();
                             }
+                            self.toggle_device_state();
                         }
                         XzEvent::VolumeButtonClicked => {
                             info!("Volume button clicked!");
                         }
-                        XzEvent::WebSocketConnected => {
-                            info!("Connected,try to send hello message");
-                            // // send client hello message
-                            // if let Some(client) = &mut self.client {
-                            //     if client.is_connected() {
-                            //         let hello_message = ClientHelloMessage::new().unwrap();
-                            //         info!("Worker thread: Sending hello message...");
-                            //         match client.send(FrameType::Text(false), hello_message.as_bytes()) {
-                            //             Ok(_) => info!("Worker thread: Hello message sent!"),
-                            //             Err(e) => info!("Worker thread: Send error: {:?}", e),
-                            //         }
-                            //     } else {
-                            //         info!("Worker thread: Client not connected, cannot send.");
-                            //     }
-                            // }
+                        // XzEvent::WebSocketConnected => {
+                        //     info!("Connected,try to send hello message");
+                        //     // // send client hello message
+                        //     // if let Some(client) = &mut self.client {
+                        //     //     if client.is_connected() {
+                        //     //         let hello_message = ClientHelloMessage::new().unwrap();
+                        //     //         info!("Worker thread: Sending hello message...");
+                        //     //         match client.send(FrameType::Text(false), hello_message.as_bytes()) {
+                        //     //             Ok(_) => info!("Worker thread: Hello message sent!"),
+                        //     //             Err(e) => info!("Worker thread: Send error: {:?}", e),
+                        //     //         }
+                        //     //     } else {
+                        //     //         info!("Worker thread: Client not connected, cannot send.");
+                        //     //     }
+                        //     // }
+                        // }
+                        XzEvent::WebSocketClosed => {
+                            info!("WebSocketClosed");
+                            // board.SetPowerSaveMode(true);
+                            // Schedule([this]() {
+                            //     auto display = Board::GetInstance().GetDisplay();
+                            //     display->SetChatMessage("system", "");
+                            //     SetDeviceState(kDeviceStateIdle);
+                            // }); });
+                            self.set_device_state(DeviceState::Idle);
                         }
                         XzEvent::WebsocketTextMessageReceived(text) => {
                             info!("Received text message: {}", text);
+                            let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                            if let Some(message_type) = message["type"].as_str() {
+                                //             if (strcmp(type->valuestring, "tts") == 0) {
+                                //             auto state = cJSON_GetObjectItem(root, "state");
+                                //             if (strcmp(state->valuestring, "start") == 0) {
+                                //                 Schedule([this]() {
+                                //                     aborted_ = false;
+                                //                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
+                                //                         SetDeviceState(kDeviceStateSpeaking);
+                                //                     }
+                                //                 });
+                                //             } else if (strcmp(state->valuestring, "stop") == 0) {
+                                //                 Schedule([this]() {
+                                //                     background_task_->WaitForCompletion();
+                                //                     if (device_state_ == kDeviceStateSpeaking) {
+                                //                         if (listening_mode_ == kListeningModeManualStop) {
+                                //                             SetDeviceState(kDeviceStateIdle);
+                                //                         } else {
+                                //                             SetDeviceState(kDeviceStateListening);
+                                //                         }
+                                //                     }
+                                //                 });
+                                //             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+                                //                 auto text = cJSON_GetObjectItem(root, "text");
+                                //                 if (cJSON_IsString(text)) {
+                                //                     ESP_LOGI(TAG, "<< %s", text->valuestring);
+                                //                     Schedule([this, display, message = std::string(text->valuestring)]() {
+                                //                         display->SetChatMessage("assistant", message.c_str());
+                                //                     });
+                                //                 }
+                                //             }
+                                //         } else if (strcmp(type->valuestring, "stt") == 0) {
+                                //             auto text = cJSON_GetObjectItem(root, "text");
+                                //             if (cJSON_IsString(text)) {
+                                //                 ESP_LOGI(TAG, ">> %s", text->valuestring);
+                                //                 Schedule([this, display, message = std::string(text->valuestring)]() {
+                                //                     display->SetChatMessage("user", message.c_str());
+                                //                 });
+                                //             }
+                                //         } else if (strcmp(type->valuestring, "llm") == 0) {
+                                //             auto emotion = cJSON_GetObjectItem(root, "emotion");
+                                //             if (cJSON_IsString(emotion)) {
+                                //                 Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
+                                //                     display->SetEmotion(emotion_str.c_str());
+                                //                 });
+                                //             }
+                                // #if CONFIG_IOT_PROTOCOL_MCP
+                                //         } else if (strcmp(type->valuestring, "mcp") == 0) {
+                                //             auto payload = cJSON_GetObjectItem(root, "payload");
+                                //             if (cJSON_IsObject(payload)) {
+                                //                 McpServer::GetInstance().ParseMessage(payload);
+                                //             }
+                                // #endif
+                                // #if CONFIG_IOT_PROTOCOL_XIAOZHI
+                                //         } else if (strcmp(type->valuestring, "iot") == 0) {
+                                //             auto commands = cJSON_GetObjectItem(root, "commands");
+                                //             if (cJSON_IsArray(commands)) {
+                                //                 auto& thing_manager = iot::ThingManager::GetInstance();
+                                //                 for (int i = 0; i < cJSON_GetArraySize(commands); ++i) {
+                                //                     auto command = cJSON_GetArrayItem(commands, i);
+                                //                     thing_manager.Invoke(command);
+                                //                 }
+                                //             }
+                                // #endif
+                                //         } else if (strcmp(type->valuestring, "system") == 0) {
+                                //             auto command = cJSON_GetObjectItem(root, "command");
+                                //             if (cJSON_IsString(command)) {
+                                //                 ESP_LOGI(TAG, "System command: %s", command->valuestring);
+                                //                 if (strcmp(command->valuestring, "reboot") == 0) {
+                                //                     // Do a reboot if user requests a OTA update
+                                //                     Schedule([this]() {
+                                //                         Reboot();
+                                //                     });
+                                //                 } else {
+                                //                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
+                                //                 }
+                                //             }
+                                //         } else if (strcmp(type->valuestring, "alert") == 0) {
+                                //             auto status = cJSON_GetObjectItem(root, "status");
+                                //             auto message = cJSON_GetObjectItem(root, "message");
+                                //             auto emotion = cJSON_GetObjectItem(root, "emotion");
+                                //             if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
+                                //                 Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::P3_VIBRATION);
+                                //             } else {
+                                //                 ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+                                //             }
+                                //         } else {
+                                //             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
+                                //         } });
+                                if message_type == "tts" {
+                                    if let Some(state) = message["state"].as_str() {
+                                        if state == "start" {
+                                            // TODO:: 研究一下 aborted 是干什么的
+                                            // self.aborted = false;
+                                            if self.state == DeviceState::Idle
+                                                || self.state == DeviceState::Listening
+                                            {
+                                                self.set_device_state(DeviceState::Speaking);
+                                            }
+                                        } else if state == "stop" {
+                                            // TODO:: 看一下 background_task_ 在我们这里怎么实现，他的作用应该是等后台任务完成。
+                                            // background_task_->WaitForCompletion();
+                                            if self.state == DeviceState::Speaking {
+                                                if self.listening_mode == ListeningMode::Manual {
+                                                    self.set_device_state(DeviceState::Idle);
+                                                } else {
+                                                    self.set_device_state(DeviceState::Listening);
+                                                }
+                                            }
+                                        }
+                                        // TODO:: 处理其它文本
+                                    }
+                                }
+                            }
                         }
-                        // XzEvent::ServerHelloMessageReceived => {
-                        //     info!("Worker thread: Server hello message received.");
-                        // }
                         XzEvent::SendAudioEvent => {
+                            // info!("XzEvent::SendAudioEvent");
                             let packets = {
                                 let mut queue = audio_packet_queue_arc.lock().unwrap();
                                 // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
@@ -256,6 +388,7 @@ impl Application {
                         }
                         XzEvent::AudioPacketReceived(audio_stream_packet) => {
                             // 处理从服务器端接收到的音频数据包
+                            info!("XzEvent::AudioPacketReceived - 从服务器端接收到的音频数据包");
                             if self.state == DeviceState::Speaking
                                 && audio_packet_queue_arc.lock().unwrap().len()
                                     < MAX_AUDIO_PACKETS_IN_QUEUE
@@ -269,6 +402,7 @@ impl Application {
                             }
                         }
                         XzEvent::AddAudioPacketToQueue(packet) => {
+                            // info!("XzEvent::AddAudioPacketToQueue: add audio packet to queue");
                             // 把编码后的音频包添加待发送队列
                             let audio_packet_queue = Arc::clone(&audio_packet_queue_arc);
                             let mut queue = audio_packet_queue.lock().unwrap();
@@ -326,6 +460,11 @@ impl Application {
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+                // display->SetStatus(Lang::Strings::STANDBY);
+                // display->SetEmotion("neutral");
+                // audio_processor_->Stop();
+                // wake_word_->StartDetection();
+                self.audio_processor.lock().unwrap().stop();
             }
             DeviceState::Activating => {
                 info!(
@@ -431,7 +570,7 @@ impl Application {
                 }
             }
             DeviceState::Listening => {
-                // self.protocol.close_audio_channel().unwrap();
+                info!("DeviceState::Listening - Closing audio channel...");
                 if let Err(e) = self.protocol.close_audio_channel() {
                     error!("Failed to close_audio_channel: {:?}", e);
                 }
@@ -479,7 +618,7 @@ impl Application {
 
     fn start_output_audio(&mut self) {
         // 启动一个线程来decode audio数据
-        const THREAD_STACK_SIZE: usize = 8 * 1024;
+        const THREAD_STACK_SIZE: usize = 16 * 1024;
         let thread_builder = thread::Builder::new()
             .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);

@@ -8,6 +8,7 @@ pub enum AbortReason {
 pub enum ListeningMode {
     AutoStop,
     Realtime,
+    Manual,
 }
 
 #[derive(PartialEq, Clone, Debug)]

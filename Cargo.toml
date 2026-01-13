@@ -81,6 +81,7 @@ bytemuck = "1.24.0"
 extra_components = [
     { component_dirs = [ "components/libopus" ], bindings_header = "components/libopus/bindings.h", bindings_module = "es32_component_opus" },
     { component_dirs = [ "components/button" ], bindings_header = "components/button/bindings.h", bindings_module = "es32_component_button" },
+    { component_dirs = [ "components/espressif/esp-sr" ], bindings_header = "components/espressif/esp-sr/bindings.h", bindings_module = "es32_component_esp_sr" },
     { remote_component = { name = "espressif/esp_websocket_client", version = "1.5.0" } },
 ]
 

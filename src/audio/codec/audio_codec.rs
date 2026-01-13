@@ -7,6 +7,7 @@ pub trait AudioCodec: Send {
 
     fn input_enabled(&self) -> bool;
     fn output_enabled(&self) -> bool;
+    fn input_reference(&self) -> bool;
 
     fn start(&mut self);
 

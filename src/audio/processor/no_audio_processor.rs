@@ -3,13 +3,14 @@ use crate::audio::processor::audio_processor::AudioProcessor;
 pub struct NoAudioProcessor {
     input_sample_rate: u32,
     audio_output_callback: Option<Box<dyn FnMut(Vec<i16>) + Send + 'static>>,
+    is_running: bool,
 }
-
 impl NoAudioProcessor {
     pub fn new(sample_rate: u32) -> Self {
         Self {
             input_sample_rate: sample_rate,
             audio_output_callback: None,
+            is_running: false,
         }
     }
 }
@@ -26,15 +27,15 @@ impl AudioProcessor for NoAudioProcessor {
     }
 
     fn start(&mut self) {
-        todo!()
+        self.is_running = true;
     }
 
     fn stop(&mut self) {
-        todo!()
+        self.is_running = false;
     }
 
     fn is_running(&self) -> bool {
-        todo!()
+        return self.is_running;
     }
     fn get_feed_size(&self) -> usize {
         return (30 * self.input_sample_rate / 1000).try_into().unwrap();

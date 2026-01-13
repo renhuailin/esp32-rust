@@ -1,5 +1,6 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result};
@@ -13,15 +14,15 @@ use log::{error, info};
 
 use crate::audio::codec::AudioStreamPacket;
 use crate::common::enums::{AbortReason, ListeningMode};
-use crate::common::event::XzEvent;
+use crate::common::event::{WsEvent, XzEvent};
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
 
 pub struct WebSocketProtocol {
     client: Option<Box<EspWebSocketClient<'static>>>,
-    // sender: Sender<XzEvent>,
     internal_sender: Sender<XzEvent>,
-    internal_receiver: Receiver<XzEvent>,
+    internal_receiver: Option<Receiver<XzEvent>>,
+    external_sender: Sender<XzEvent>,
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
     is_connected: bool,
@@ -30,6 +31,7 @@ pub struct WebSocketProtocol {
     on_incoming_audio:
         Option<Box<dyn FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static>>,
     last_incoming_time: Arc<Mutex<Option<Instant>>>, // 上一次收到服务器端数据的时间
+    server_hello_received: Arc<Mutex<bool>>,
 }
 
 impl WebSocketProtocol {
@@ -42,7 +44,7 @@ impl WebSocketProtocol {
     ///
     /// # 返回值
     /// 返回初始化后的 WebSocketProtocol 实例
-    pub fn new(device_id: &str) -> Self {
+    pub fn new(device_id: &str, sender: Sender<XzEvent>) -> Self {
         let (inner_sender, inner_receiver): (Sender<XzEvent>, Receiver<XzEvent>) = channel();
         Self {
             client: None,
@@ -50,10 +52,12 @@ impl WebSocketProtocol {
             device_id: device_id.to_string(),
             is_connected: false,
             internal_sender: inner_sender,
-            internal_receiver: inner_receiver,
+            internal_receiver: Some(inner_receiver),
+            external_sender: sender,
             on_incoming_text: None,
             on_incoming_audio: None,
             last_incoming_time: Arc::new(Mutex::new(None)),
+            server_hello_received: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -116,11 +120,34 @@ impl WebSocketProtocol {
 
 impl Protocol for WebSocketProtocol {
     fn send_text(&mut self, text: &str) -> Result<()> {
-        todo!()
+        if let Some(client) = &mut self.client {
+            if client.is_connected() {
+                info!("Worker thread: Sending text message...");
+                match client.send(FrameType::Text(false), text.as_bytes()) {
+                    Ok(_) => info!("Worker thread: Hello message sent!"),
+                    Err(e) => info!("Worker thread: Send error: {:?}", e),
+                }
+            } else {
+                info!("Worker thread: Client not connected, cannot send.");
+            }
+        }
+        Ok(())
     }
 
-    fn send_audio(&mut self, audio: &AudioStreamPacket) -> Result<()> {
-        todo!()
+    fn send_audio(&mut self, packet: &AudioStreamPacket) -> Result<()> {
+        if let Some(client) = &mut self.client {
+            if client.is_connected() {
+                match client.send(FrameType::Binary(false), &packet.payload) {
+                    Ok(_) => {
+                        info!("Worker thread: Audio packet sent!")
+                    }
+                    Err(e) => info!("Worker thread: Send error: {:?}", e),
+                }
+            } else {
+                info!("ws_worker thread : Client not connected, cannot send.");
+            }
+        }
+        Ok(())
     }
 
     fn open_audio_channel(&mut self) -> Result<bool, Error> {
@@ -137,7 +164,7 @@ impl Protocol for WebSocketProtocol {
         let timeout = Duration::from_secs(10);
         // let (tx, rx) = mpsc::channel::<ExampleEvent>();
         // let ws_url = "ws://192.168.1.231:8000/xiaozhi/v1/";
-        let ws_url = "ws://192.168.1.105:8000/xiaozhi/v1/";
+        let ws_url = "ws://192.168.1.243:8000/xiaozhi/v1/";
 
         let config = EspWebSocketClientConfig {
             headers: Some(header.as_str()),
@@ -154,6 +181,8 @@ impl Protocol for WebSocketProtocol {
         let mut on_incoming_audio_handler = self.on_incoming_audio.take();
 
         let inner_sender = self.internal_sender.clone();
+        let external_sender = self.external_sender.clone();
+        let server_hello_received = self.server_hello_received.clone();
         self.client = Some(Box::new(EspWebSocketClient::new(
             ws_url,
             &config,
@@ -168,7 +197,7 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Connected => {
                             info!("Websocket connected");
-                            // internal_sender.send(XzEvent::WebSocketConnected).unwrap();
+                            inner_sender.send(XzEvent::WebSocketConnected).unwrap();
                         }
                         WebSocketEventType::Disconnected => {
                             info!("Websocket disconnected");
@@ -184,28 +213,51 @@ impl Protocol for WebSocketProtocol {
 
                         WebSocketEventType::Text(text) => {
                             info!("Websocket received a text message, text: {text}");
-                            let message: serde_json::Value = serde_json::from_str(text).unwrap();
-                            info!("parse json success");
-                            if let Some(message_type) = message["type"].as_str() {
-                                if message_type == "hello" {
-                                    inner_sender
-                                        .send(XzEvent::ServerHelloMessageReceived(text.to_string()))
-                                        .unwrap();
-                                } else {
-                                    if let Some(on_incoming_text) =
-                                        on_incoming_text_handler.as_mut()
-                                    {
-                                        let _ = (on_incoming_text)(text);
+
+                            if !*server_hello_received.lock().unwrap() {
+                                let message: serde_json::Value =
+                                    serde_json::from_str(text).unwrap();
+                                if let Some(message_type) = message["type"].as_str() {
+                                    if message_type == "hello" {
+                                        inner_sender
+                                            .send(XzEvent::ServerHelloMessageReceived(
+                                                text.to_string(),
+                                            ))
+                                            .unwrap();
+                                        *server_hello_received.lock().unwrap() = true;
                                     }
                                 }
+                            } else {
+                                // if let Some(on_incoming_text) = on_incoming_text_handler.as_mut() {
+                                //     let _ = (on_incoming_text)(text);
+                                // }
+                                external_sender
+                                    .send(XzEvent::WebsocketTextMessageReceived(text.to_string()))
+                                    .unwrap();
                             }
+
+                            // info!("parse json success");
+                            // if let Some(message_type) = message["type"].as_str() {
+                            //     if message_type == "hello" {
+                            //         inner_sender
+                            //             .send(XzEvent::ServerHelloMessageReceived(text.to_string()))
+                            //             .unwrap();
+                            //     } else {
+                            //         info!("call on_incoming_text handler");
+                            //         if let Some(on_incoming_text) =
+                            //             on_incoming_text_handler.as_mut()
+                            //         {
+                            //             let _ = (on_incoming_text)(text);
+                            //         }
+                            //     }
+                            // }
 
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
                         }
 
                         WebSocketEventType::Binary(binary) => {
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
-                            // info!("Websocket recv, binary: {binary:?}");
+                            // // info!("Websocket recv, binary: {binary:?}");
                             let packet = AudioStreamPacket {
                                 sample_rate: 16000,
                                 frame_duration: 60,
@@ -213,11 +265,15 @@ impl Protocol for WebSocketProtocol {
                                 payload: binary.to_vec(),
                             };
 
-                            // sender.send(XzEvent::AudioDataReceived(packet)).unwrap();
+                            // // sender.send(XzEvent::AudioDataReceived(packet)).unwrap();
 
-                            if let Some(on_incoming_audio) = on_incoming_audio_handler.as_mut() {
-                                let _ = (on_incoming_audio)(&packet);
-                            }
+                            // if let Some(on_incoming_audio) = on_incoming_audio_handler.as_mut() {
+                            //     let _ = (on_incoming_audio)(&packet);
+                            // }
+
+                            external_sender
+                                .send(XzEvent::AudioPacketReceived(packet))
+                                .unwrap();
                         }
                         WebSocketEventType::Ping => {
                             info!("Websocket ping");
@@ -232,34 +288,46 @@ impl Protocol for WebSocketProtocol {
 
         info!("wait for server hello message");
         // wait for server hello message
-        // cmd_receiver.recv()?;
-        for event in &self.internal_receiver {
-            match event {
-                XzEvent::WebSocketConnected => {
-                    info!("Connected,try to send hello message");
-                    // send client hello message
-                    if let Some(client) = &mut self.client {
-                        if client.is_connected() {
-                            let hello_message = ClientHelloMessage::new().unwrap();
-                            info!("Worker thread: Sending hello message...");
-                            match client.send(FrameType::Text(false), hello_message.as_bytes()) {
-                                Ok(_) => info!("Worker thread: Hello message sent!"),
-                                Err(e) => info!("Worker thread: Send error: {:?}", e),
+        let receiver = self.internal_receiver.take();
+        if let Some(rx) = receiver {
+            loop {
+                match rx.recv() {
+                    Ok(event) => {
+                        match event {
+                            XzEvent::WebSocketConnected => {
+                                info!("Connected,try to send hello message");
+                                // send client hello message
+                                if let Some(client) = &mut self.client {
+                                    if client.is_connected() {
+                                        // send client hello message
+                                        let hello_message = ClientHelloMessage::new().unwrap();
+                                        info!("Worker thread: Sending hello message...");
+                                        match client
+                                            .send(FrameType::Text(false), hello_message.as_bytes())
+                                        {
+                                            Ok(_) => {
+                                                info!("Worker thread: Hello message sent!")
+                                            }
+                                            Err(e) => {
+                                                info!("Worker thread: Send error: {:?}", e)
+                                            }
+                                        }
+                                    } else {
+                                        info!("Worker thread: Client not connected, cannot send.");
+                                    }
+                                }
+                                // break;
                             }
-                        } else {
-                            info!("Worker thread: Client not connected, cannot send.");
+                            XzEvent::ServerHelloMessageReceived(_) => {
+                                // info!("Worker thread: Server hello message received. {}", text);
+                                // self.parse_server_hello_message(text);
+                                break;
+                            }
+                            _ => todo!(),
                         }
                     }
-                    // break;
+                    Err(e) => {}
                 }
-                XzEvent::ServerHelloMessageReceived(_) => {
-                    // info!("Worker thread: Server hello message received. {}", text);
-                    // self.parse_server_hello_message(text);
-                    break;
-                }
-                // XzEvent::SendAudioEvent => todo!(),
-                // XzEvent::AudioDataReceived(audio_stream_packet) => todo!(),
-                _ => todo!(),
             }
         }
 

@@ -96,6 +96,9 @@ pub enum AudioCommand {
 }
 
 fn main() -> Result<()> {
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
+
     let app = Application::new();
     match app {
         Ok(mut application) => application.start()?,
@@ -724,7 +727,11 @@ fn main1() -> Result<()> {
     // let mut app = Application::new();
 
     let tx1 = tx.clone();
-    let ws_client = Arc::new(Mutex::new(WebSocketProtocol::new(mac_address_str.as_str())));
+
+    let ws_client = Arc::new(Mutex::new(WebSocketProtocol::new(
+        mac_address_str.as_str(),
+        tx.clone(),
+    )));
 
     // 创建一个 MPSC channel，用于从事件处理器向后台线程发送命令
     // let (ws_command_tx, ws_command_rx) = mpsc::channel::<WsCommand>();

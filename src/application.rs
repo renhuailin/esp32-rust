@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex, MutexGuard,
     },
     thread,
+    time::Duration,
 };
 
 use anyhow::{Error, Result};
@@ -86,8 +87,10 @@ impl Application {
 
         board.init()?;
         info!("board init success");
+
         let mac_address = board.get_wifi_driver().get_mac_address()?;
-        let protocol = WebSocketProtocol::new(mac_address.as_str());
+        let sender_for_protocol = inner_sender.clone();
+        let protocol = WebSocketProtocol::new(mac_address.as_str(), sender_for_protocol);
 
         //待发送的音频队列
         let audio_packet_queue = Arc::new(Mutex::new(
@@ -125,22 +128,22 @@ impl Application {
         // let codec = self.board.get_audio_codec();
         codec_arc.lock().unwrap().start();
 
-        let sender = self.inner_sender.clone();
-        self.protocol.on_incoming_text(move |text| {
-            info!("Received text message: {}", text);
-            if let Err(e) = sender.send(XzEvent::WebsocketTextMessageReceived(text.to_string())) {
-                log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
-            }
-            Ok(())
-        })?;
+        // let sender = self.inner_sender.clone();
+        // self.protocol.on_incoming_text(move |text| {
+        //     info!("Received text message: {}", text);
+        //     if let Err(e) = sender.send(XzEvent::WebsocketTextMessageReceived(text.to_string())) {
+        //         log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
+        //     }
+        //     Ok(())
+        // })?;
 
-        let sender1 = self.inner_sender.clone();
-        self.protocol.on_incoming_audio(move |packet| {
-            if let Err(e) = sender1.send(XzEvent::AudioPacketReceived(packet.clone())) {
-                log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
-            }
-            Ok(())
-        })?;
+        // let sender1 = self.inner_sender.clone();
+        // self.protocol.on_incoming_audio(move |packet| {
+        //     if let Err(e) = sender1.send(XzEvent::AudioPacketReceived(packet.clone())) {
+        //         log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
+        //     }
+        //     Ok(())
+        // })?;
 
         // 启动一个线程来读取音频数据
         const THREAD_STACK_SIZE: usize = 96 * 1024;
@@ -194,7 +197,10 @@ impl Application {
             audio_loop(codec_clone, audio_processor);
         });
 
+        info!("启动解码线程 start_output_audio ...");
         self.start_output_audio();
+
+        self.set_device_state(DeviceState::Idle);
 
         info!("开始处理内部事件 ...");
         // 处理内部事件
@@ -203,6 +209,7 @@ impl Application {
                 Ok(event) => {
                     match event {
                         XzEvent::BootButtonClicked => {
+                            info!("Boot button clicked! current state: {:?}", self.state);
                             if self.state == DeviceState::Idle
                                 && self.board.get_wifi_driver().is_connected().unwrap_or(false)
                             {
@@ -210,7 +217,7 @@ impl Application {
                             }
                         }
                         XzEvent::VolumeButtonClicked => {
-                            info!("Volume button clicked");
+                            info!("Volume button clicked!");
                         }
                         XzEvent::WebSocketConnected => {
                             info!("Connected,try to send hello message");
@@ -248,6 +255,7 @@ impl Application {
                             }
                         }
                         XzEvent::AudioPacketReceived(audio_stream_packet) => {
+                            // 处理从服务器端接收到的音频数据包
                             if self.state == DeviceState::Speaking
                                 && audio_packet_queue_arc.lock().unwrap().len()
                                     < MAX_AUDIO_PACKETS_IN_QUEUE
@@ -255,9 +263,13 @@ impl Application {
                                 let mut audio_decode_queue =
                                     self.audio_decode_queue.lock().unwrap();
                                 audio_decode_queue.push_back(audio_stream_packet);
+                                self.decode_task_sender
+                                    .send(XzEvent::AudioDecodeEvent)
+                                    .unwrap();
                             }
                         }
                         XzEvent::AddAudioPacketToQueue(packet) => {
+                            // 把编码后的音频包添加待发送队列
                             let audio_packet_queue = Arc::clone(&audio_packet_queue_arc);
                             let mut queue = audio_packet_queue.lock().unwrap();
 
@@ -309,12 +321,37 @@ impl Application {
         self.state = state;
 
         match self.state {
-            DeviceState::Idle => todo!(),
-            DeviceState::Activating => todo!(),
-            DeviceState::WifiConfiguring => todo!(),
-            DeviceState::Connecting => todo!(),
+            DeviceState::Idle => {
+                info!(
+                    "Device state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+            }
+            DeviceState::Activating => {
+                info!(
+                    "Device state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+            }
+            DeviceState::WifiConfiguring => {
+                info!(
+                    "Device state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+            }
+            DeviceState::Connecting => {
+                info!(
+                    "Device state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+            }
             // DeviceState::DeviceStateAudioTesting => todo!(),
-            DeviceState::Speaking => todo!(),
+            DeviceState::Speaking => {
+                info!(
+                    "Device state changed from {:?} to {:?}",
+                    previous_state, self.state
+                );
+            }
             DeviceState::Listening => {
                 info!(
                     "Listening state changed from {:?} to {:?}",
@@ -337,7 +374,12 @@ impl Application {
                     self.audio_processor.lock().unwrap().start();
                 }
             }
-            DeviceState::Starting => todo!(),
+            DeviceState::Starting => {
+                info!(
+                    "Starting state changed from {:?} to {:?}",
+                    previous_state, self.state
+                )
+            }
             _ => {}
         }
     }
@@ -437,7 +479,7 @@ impl Application {
 
     fn start_output_audio(&mut self) {
         // 启动一个线程来decode audio数据
-        const THREAD_STACK_SIZE: usize = 96 * 1024;
+        const THREAD_STACK_SIZE: usize = 8 * 1024;
         let thread_builder = thread::Builder::new()
             .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);
@@ -563,6 +605,7 @@ fn start_audio_input(
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
         }
     }
+    thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
 }
 
 fn decode_opus_audio(

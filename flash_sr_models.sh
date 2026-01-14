@@ -1,0 +1,1 @@
+espflash write-bin 0x10000  /Users/harley/workspaces/CPP/xiaozhi-esp32-1.7.6/build/srmodels/srmodels.bin

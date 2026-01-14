@@ -26,10 +26,16 @@ use crate::{
             opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
             AudioStreamPacket, MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
-        processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
+        processor::{
+            afe_audio_processor::AfeAudioProcessor, audio_processor::AudioProcessor,
+            no_audio_processor::NoAudioProcessor,
+        },
     },
     axp173::{Axp173, Ldo},
-    boards::{board::Board, jianglian_s3cam_board},
+    boards::{
+        board::{self, Board},
+        jianglian_s3cam_board,
+    },
     common::{
         converter::bytes_to_i16_slice,
         enums::{AbortReason, AecMode, DeviceState, ListeningMode},
@@ -101,6 +107,10 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
+        let audio_processor = Arc::new(Mutex::new(
+            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        ));
+
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
@@ -112,7 +122,7 @@ impl Application {
             decode_task_receiver: Some(decode_task_receiver),
             aec_mode: AecMode::Off,
             listening_mode: ListeningMode::AutoStop,
-            audio_processor: Arc::new(Mutex::new(NoAudioProcessor::new(16000))),
+            audio_processor: audio_processor,
             audio_packet_queue,
             audio_decode_queue,
             busy_decoding_audio: Arc::new(Mutex::new(false)),

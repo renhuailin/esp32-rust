@@ -19,6 +19,7 @@ opt-level = "z"
 
 [features]
 default = []
+use_device_aec = []
 
 experimental = ["esp-idf-svc/experimental"]
 

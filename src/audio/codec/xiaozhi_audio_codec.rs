@@ -22,6 +22,7 @@ pub struct XiaozhiAudioCodec {
     output_volume: u8,
     i2s_driver: Arc<Mutex<I2sDriver<'static, I2sBiDir>>>,
     input_reference: bool,
+    input_channels: i32,
 }
 
 impl XiaozhiAudioCodec {
@@ -54,6 +55,9 @@ impl XiaozhiAudioCodec {
                 // return Err(anyhow!("初始化ES8311失败:{:?}", e));
             }
         }
+        let input_reference = true;
+        // let input_channels = input_reference ? 2 : 1;
+        let input_channels = if input_reference { 2 } else { 1 };
 
         Self {
             input_codec: es7210,
@@ -63,6 +67,7 @@ impl XiaozhiAudioCodec {
             output_volume: 0,
             i2s_driver: Arc::new(Mutex::new(i2s_driver)),
             input_reference: true,
+            input_channels,
         }
     }
 }
@@ -161,5 +166,9 @@ impl AudioCodec for XiaozhiAudioCodec {
 
     fn input_reference(&self) -> bool {
         return self.input_reference;
+    }
+
+    fn input_channels(&self) -> i32 {
+        self.input_channels
     }
 }

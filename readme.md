@@ -53,3 +53,19 @@ $ nohup bash run_server_2pass.sh \
 $ cd  /Users/harley/workspaces/Python/FunASR/FunASR_samples/python
 $ uv run funasr_wss_client.py --host "127.0.0.1" --port 10096 --mode 2pass
 ```
+
+如果出现下面的错误：
+
+```
+error: linker `xtensa-esp32s3-elf-gcc` not found
+  |
+  = note: No such file or directory (os error 2)
+
+error: could not compile `esp-project-for-debug` (bin "esp-project-for-debug") due to 1 previous error
+```
+
+就执行下面的命令：
+
+```
+. ~/export-esp.sh
+```

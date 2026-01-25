@@ -35,7 +35,7 @@ use esp_idf_svc::wifi::WifiDeviceId;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::EspError;
 use futures::{select, FutureExt};
-use log::{error, info, warn};
+use log::{error, info, warn, LevelFilter};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
 use xiaoxin_esp32::application::{Application, ApplicationConfig};
@@ -96,13 +96,20 @@ pub enum AudioCommand {
 }
 
 fn main() -> Result<()> {
-    run_app().unwrap();
+    // run_app().unwrap();
+    match run_app() {
+        Ok(_) => todo!(),
+        Err(e) => {
+            error!("{}", e);
+        }
+    }
     Ok(())
 }
 
 fn run_app() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    log::set_max_level(LevelFilter::Debug);
 
     let app = Application::new();
     match app {

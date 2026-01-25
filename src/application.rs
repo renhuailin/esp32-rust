@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        mpsc::{channel, Receiver, Sender},
+        mpsc::{self, channel, Receiver, Sender},
         Arc, Mutex, MutexGuard,
     },
     thread,
@@ -13,10 +13,11 @@ use esp_idf_hal::{
     i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
     peripheral,
+    task::thread::ThreadSpawnConfiguration,
 };
 use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
 use esp_idf_sys::es32_component_opus::OPUS_GET_INBAND_FEC_REQUEST;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::{
     audio::{
@@ -111,6 +112,8 @@ impl Application {
             AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
         ));
 
+        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
@@ -162,11 +165,6 @@ impl Application {
         //     Ok(())
         // })?;
 
-        // 启动一个线程来读取音频数据
-        const THREAD_STACK_SIZE: usize = 96 * 1024;
-        let thread_builder = thread::Builder::new()
-            .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
-            .stack_size(THREAD_STACK_SIZE);
         let codec_clone = Arc::clone(&codec_arc);
 
         let sample_rate = 16000; //# 采样率固定为16000Hz
@@ -180,10 +178,57 @@ impl Application {
             )
             .unwrap(),
         ));
+        let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
 
         let audio_packet_queue_arc = Arc::clone(&self.audio_packet_queue);
 
         let inner_sender = self.inner_sender.clone();
+
+        let encode_thread = thread::Builder::new()
+            .name("encoder_task".into())
+            .stack_size(8 * 1024)
+            .spawn(move || {
+                for pcm_data in pcm_rx {
+                    // 在这里做编码，环境单纯，没有锁竞争
+                    // 打印数据长度，排查问题
+                    info!("Encoding frame size: {}", pcm_data.len());
+
+                    let sender = inner_sender.clone();
+                    let encoder = Arc::clone(&opus_encoder);
+                    let result = encoder
+                        .lock()
+                        .map_err(|e| {
+                            error!("Encoder lock poisoned: {:?}", e);
+                            // 可以选择 clear_poison() 或者直接返回
+                        })
+                        .unwrap()
+                        .encode(pcm_data, &mut move |opus_data: Vec<u8>| {
+                            println!("编码完成，add audio packet to queue");
+                            let packet = AudioStreamPacket {
+                                sample_rate: 16000,
+                                frame_duration: 60,
+                                timestamp: 0,
+                                payload: opus_data,
+                            };
+                            if let Err(e) = sender.send(XzEvent::AddAudioPacketToQueue(packet)) {
+                                error!("Failed to send audio packet: {:?}", e);
+                                return;
+                            }
+                        });
+                    match result {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Encode error: {:?}", e);
+                        }
+                    }
+                }
+            });
+        match encode_thread {
+            Ok(_) => {}
+            Err(_) => {
+                error!("Failed to create encode thread");
+            }
+        }
 
         let audio_processor = Arc::clone(&self.audio_processor);
 
@@ -191,29 +236,59 @@ impl Application {
             .lock()
             .unwrap()
             .on_output(Box::new(move |data| {
-                // println!("Received audio data: {:?}", data);
-                let encoder = Arc::clone(&opus_encoder);
-                let sender = inner_sender.clone();
-
-                encoder
-                    .lock()
-                    .unwrap()
-                    .encode(data, &mut move |opus_data: Vec<u8>| {
-                        // info!("编码完成，add audio packet to queue");
-                        let packet = AudioStreamPacket {
-                            sample_rate: 16000,
-                            frame_duration: 60,
-                            timestamp: 0,
-                            payload: opus_data,
-                        };
-                        sender.send(XzEvent::AddAudioPacketToQueue(packet)).unwrap();
-                    })
-                    .unwrap();
+                info!("Received audio data in audio_processor on_output callback");
+                if let Err(e) = pcm_tx.send(data) {
+                    // 如果发送失败（比如编码线程挂了），打印个日志，不要 panic
+                    error!("Failed to send PCM to encoder: {:?}", e);
+                }
+                // info!("Received audio data: {:?}", data);
+                // let encoder = Arc::clone(&opus_encoder);
+                // let sender = inner_sender.clone();
+                // info!("start to 编码 PCM data");
+                // let result = encoder
+                //     .lock()
+                //     .map_err(|e| {
+                //         error!("Encoder lock poisoned: {:?}", e);
+                //         // 可以选择 clear_poison() 或者直接返回
+                //     })
+                //     .unwrap()
+                //     .encode(data, &mut move |opus_data: Vec<u8>| {
+                //         println!("编码完成，add audio packet to queue");
+                //         let packet = AudioStreamPacket {
+                //             sample_rate: 16000,
+                //             frame_duration: 60,
+                //             timestamp: 0,
+                //             payload: opus_data,
+                //         };
+                //         if let Err(e) = sender.send(XzEvent::AddAudioPacketToQueue(packet)) {
+                //             error!("Failed to send audio packet: {:?}", e);
+                //             return;
+                //         }
+                //     });
+                // match result {
+                //     Ok(_) => {}
+                //     Err(e) => {
+                //         error!("Encode error: {:?}", e);
+                //     }
+                // }
             }));
 
-        let _ = thread_builder.spawn(move || {
+        // 启动一个线程来读取音频数据
+        ThreadSpawnConfiguration {
+            name: Some(b"audio_loop\0"),
+            stack_size: 2 * 1024 * 1024,
+            priority: 5,
+            pin_to_core: Some(1.into()), // 绑定到 Core 1
+            // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+            // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+            ..Default::default()
+        }
+        .set()
+        .unwrap();
+        let _ = thread::spawn(move || {
             audio_loop(codec_clone, audio_processor);
         });
+        ThreadSpawnConfiguration::default().set().unwrap();
 
         info!("启动解码线程 start_output_audio ...");
         self.start_output_audio();
@@ -268,6 +343,7 @@ impl Application {
                         XzEvent::WebsocketTextMessageReceived(text) => {
                             info!("Received text message: {}", text);
                             let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                            info!("成功解析json！");
                             if let Some(message_type) = message["type"].as_str() {
                                 //             if (strcmp(type->valuestring, "tts") == 0) {
                                 //             auto state = cJSON_GetObjectItem(root, "state");
@@ -381,9 +457,10 @@ impl Application {
                                     }
                                 }
                             }
+                            info!("处理文本消息结束: {}", text);
                         }
                         XzEvent::SendAudioEvent => {
-                            // info!("XzEvent::SendAudioEvent");
+                            info!("XzEvent::SendAudioEvent");
                             let packets = {
                                 let mut queue = audio_packet_queue_arc.lock().unwrap();
                                 // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
@@ -628,9 +705,9 @@ impl Application {
 
     fn start_output_audio(&mut self) {
         // 启动一个线程来decode audio数据
-        const THREAD_STACK_SIZE: usize = 16 * 1024;
+        const THREAD_STACK_SIZE: usize = 8 * 1024;
         let thread_builder = thread::Builder::new()
-            .name("sender thread".into()) // 给线程起个有意义的名字，方便调试
+            .name("speaker".into()) // 给线程起个有意义的名字，方便调试
             .stack_size(THREAD_STACK_SIZE);
         let codec = Arc::clone(&self.board.get_audio_codec());
 
@@ -641,7 +718,19 @@ impl Application {
         let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
 
         if let Some(rx) = self.decode_task_receiver.take() {
-            let _ = thread_builder.spawn(move || {
+            ThreadSpawnConfiguration {
+                name: Some(b"decode_task\0"),
+                stack_size: 16 * 1024, // 64KB
+                priority: 5,
+                pin_to_core: Some(1.into()), // 绑定到 Core 1
+                // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+                // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+                ..Default::default()
+            }
+            .set()
+            .unwrap();
+
+            let _ = thread::spawn(move || {
                 let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
                 let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
                 loop {
@@ -677,6 +766,18 @@ impl Application {
                 }
                 // info!("application start 函数返回！");
             });
+
+            // match thread_handle {
+            //     Ok(_) => {
+            //         info!("success to spawn the decode thread！");
+            //     }
+            //     Err(_) => {
+            //         error!("failed to spawn the decode thread！");
+            //     }
+            // }
+
+            // Set it back to defaults.
+            ThreadSpawnConfiguration::default().set().unwrap();
         } else {
             println!("Receiver already taken!");
         }
@@ -693,8 +794,10 @@ fn audio_loop(
     // let codec_arc1 = Arc::clone(&audio_codec);
     let audio_processor_arc = Arc::clone(&audio_processor);
 
-    const READ_CHUNK_SIZE: usize = 1024;
-    let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
+    let feed_size = audio_processor.lock().unwrap().get_feed_size();
+    info!("application: feed_size: {}", feed_size);
+    // const READ_CHUNK_SIZE: usize = 1024;
+    let mut read_buffer = vec![0u8; feed_size];
     loop {
         start_audio_input(
             Arc::clone(&audio_codec),
@@ -706,6 +809,8 @@ fn audio_loop(
         if codec_arc.lock().unwrap().output_enabled() {
             start_audio_output(codec_arc, audio_processor_arc.clone());
         }
+
+        thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
     }
 }
 
@@ -713,9 +818,8 @@ fn start_audio_output(
     codec_arc: Arc<Mutex<dyn AudioCodec + 'static>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
 ) {
-    todo!()
+    info!("application: start_audio_output");
 }
-
 fn start_audio_input(
     codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
@@ -736,25 +840,60 @@ fn start_audio_input(
     // }
 
     // vTaskDelay(pdMS_TO_TICKS(OPUS_FRAME_DURATION_MS / 2));
-    if audio_processor.lock().unwrap().is_running() {
-        let samples = audio_processor.lock().unwrap().get_feed_size();
-        // let mut data = vec![0; samples];
-        let codec_arc = Arc::clone(&codec);
 
-        if samples > 0 {
-            let bytes_read = codec_arc
-                .lock()
-                .unwrap()
-                .read_audio_data(&mut read_buffer)
-                .unwrap();
+    // if audio_processor.lock().unwrap().is_running() {
+    //     let samples = audio_processor.lock().unwrap().get_feed_size();
+    //     let codec_arc = Arc::clone(&codec);
 
-            // 因为录音数据是8位PCM数据，opus_encoder 需要16位的 Vec,所以需转换下。
+    //     if samples > 0 {
+    //         let bytes_read = codec_arc
+    //             .lock()
+    //             .unwrap()
+    //             .read_audio_data(&mut read_buffer)
+    //             .unwrap();
+
+    //         // 因为录音数据是8位PCM数据，opus_encoder 需要16位的 Vec,所以需转换下。
+    //         let bytes_to_i16_result = bytes_to_i16_slice(&read_buffer[..bytes_read]).unwrap();
+    //         info!("application: feed data to audio processor");
+    //         audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
+    //     }
+    // }
+
+    // 1. 获取一次锁，检查状态并获取大小
+    // 使用代码块 {} 限制锁的范围，确保尽快释放
+    let (is_running, feed_size) = {
+        let processor = audio_processor.lock().unwrap();
+        (processor.is_running(), processor.get_feed_size())
+    };
+
+    if is_running && feed_size > 0 {
+        // 2. 读取音频 (耗时操作，不要持有 processor 的锁)
+        // read_buffer 需要扩容以容纳数据
+        if read_buffer.len() < feed_size * 2 {
+            // 假设是 i16，需要 2 倍字节
+            read_buffer.resize(feed_size * 2, 0);
+        }
+
+        let bytes_read = codec
+            .lock()
+            .unwrap()
+            .read_audio_data(&mut read_buffer) // 确保 read_audio_data 不会溢出
+            .unwrap();
+
+        if bytes_read > 0 {
             let bytes_to_i16_result = bytes_to_i16_slice(&read_buffer[..bytes_read]).unwrap();
 
+            // info!("application: feed data to audio processor");
+
+            // // 3. 再次获取锁进行 feed
+            // // 此时 codec 的锁已经释放了，避免交叉死锁
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
         }
     }
+
     thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
+
+    // thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
 }
 
 fn decode_opus_audio(

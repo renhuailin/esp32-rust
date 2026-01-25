@@ -14,8 +14,9 @@ harness = false # do not use the built in cargo test harness -> resolve rust-ana
 opt-level = "s"
 
 [profile.dev]
-debug = true    # Symbols are nice and they don't increase the size on Flash
-opt-level = "z"
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
 
 [features]
 default = []

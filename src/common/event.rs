@@ -57,4 +57,5 @@ pub enum XzEvent {
     AudioPacketReceived(AudioStreamPacket),
     WebsocketTextMessageReceived(String),
     AudioDecodeEvent,
+    AudioTestEvent(Vec<i16>),
 }

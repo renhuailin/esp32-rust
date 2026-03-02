@@ -48,11 +48,11 @@ impl XiaozhiAudioCodec {
 
         match es7210.open() {
             Ok(_) => {
-                println!("初始化ES8311成功");
+                println!("初始化es7210成功");
             }
             Err(e) => {
-                println!("初始化ES8311失败:{:?}", e);
-                // return Err(anyhow!("初始化ES8311失败:{:?}", e));
+                println!("初始化es7210失败:{:?}", e);
+                // return Err(anyhow!("初始化es7210失败:{:?}", e));
             }
         }
         let input_reference = true;
@@ -170,5 +170,24 @@ impl AudioCodec for XiaozhiAudioCodec {
 
     fn input_channels(&self) -> i32 {
         self.input_channels
+    }
+
+    fn test_play_pcm(&mut self, data: &[u8]) -> Result<(), Error> {
+        const CHUNK_SIZE: usize = 4096;
+        for chunk in data.chunks(CHUNK_SIZE) {
+            // 4. 逐块写入I2S驱动
+            match self.i2s_driver.lock().unwrap().write(chunk, BLOCK) {
+                Ok(bytes_written) => {
+                    // 打印一些进度信息，方便调试
+                    info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                }
+                Err(e) => {
+                    // 如果在写入过程中出错，打印错误并跳出循环
+                    info!("I2S write error on a chunk: {:?}", e);
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }

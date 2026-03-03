@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    audio::codec::{audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311},
+    audio::codec::{
+        audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311,
+        opus::decoder::OpusAudioDecoder,
+    },
     setting::nvs_setting::NvsSetting,
 };
 use anyhow::{Error, Result};
@@ -186,6 +189,62 @@ impl AudioCodec for XiaozhiAudioCodec {
                     info!("I2S write error on a chunk: {:?}", e);
                     break;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn test_play_opus(&mut self, data: &[u8], pcm_buffer: &mut Vec<i16>) -> Result<(), Error> {
+        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let channels = 2; //# 双声道
+
+        let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+
+        let decode_result = opus_decoder.decode(&data);
+
+        // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
+        // let decode_result = decoder.decode(&opus_data);
+
+        match decode_result {
+            Ok(pcm_data) => {
+                info!("decode success.");
+                let is_stereo = channels == 2;
+
+                if !is_stereo {
+                    //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                    let pcm_mono_data_len = pcm_data.len();
+                    // 1. 清空旧数据，但保留容量（不释放内存）
+                    pcm_buffer.clear();
+                    pcm_buffer.resize(pcm_mono_data_len * 2, 0);
+                    // let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                    // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                    for i in 0..pcm_mono_data_len {
+                        let sample = pcm_data[i];
+                        pcm_buffer[i * 2] = sample; // 左声道
+                        pcm_buffer[i * 2 + 1] = sample; // 右声道
+                    }
+
+                    let pcm_stereo_bytes: &[u8] = unsafe {
+                        core::slice::from_raw_parts(
+                            pcm_buffer.as_ptr() as *const u8,
+                            pcm_buffer.len() * std::mem::size_of::<i16>(),
+                        )
+                    };
+                    self.test_play_pcm(pcm_stereo_bytes);
+                } else {
+                    let pcm_stereo_bytes: &[u8] = unsafe {
+                        core::slice::from_raw_parts(
+                            pcm_data.as_ptr() as *const u8,
+                            pcm_data.len() * std::mem::size_of::<i16>(),
+                        )
+                    };
+                    self.test_play_pcm(pcm_stereo_bytes);
+                }
+            }
+            Err(e) => {
+                info!("Opus decode error: {:?}", e);
+                return Err(e);
             }
         }
         Ok(())

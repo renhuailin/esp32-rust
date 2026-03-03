@@ -61,14 +61,15 @@ pub type AudioBuffer = VecDeque<u8>;
 // 共享状态结构体,主要用于音频测试模式保存PCM数据。
 pub struct SharedAudioState {
     pub buffer: Mutex<AudioBuffer>,
-    // 我们可以添加一个Condvar，以便在录音满或播放空时进行等待
-    // 但为了简单起见，我们先只用Mutex
+    pub audio_packet_buffer: Mutex<VecDeque<AudioStreamPacket>>, // 我们可以添加一个Condvar，以便在录音满或播放空时进行等待
+                                                                 // 但为了简单起见，我们先只用Mutex
 }
 
 impl SharedAudioState {
     pub fn new() -> Self {
         Self {
             buffer: Mutex::new(VecDeque::new()),
+            audio_packet_buffer: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -214,6 +215,8 @@ impl Application {
 
         let inner_sender = self.inner_sender.clone();
 
+        let audio_test_mode = self.audio_test_mode.clone();
+        let audio_state = Arc::clone(&self.shared_audio_state);
         let encode_thread = thread::Builder::new()
             .name("encoder_task".into())
             .stack_size(32 * 1024)
@@ -223,8 +226,10 @@ impl Application {
                     // 打印数据长度，排查问题
                     info!("Encoding frame size: {}", pcm_data.len());
 
-                    let sender = inner_sender.clone();
+                    let inner_sender1 = inner_sender.clone();
                     let encoder = Arc::clone(&opus_encoder);
+                    let audio_state1 = Arc::clone(&audio_state);
+
                     let result = encoder
                         .lock()
                         .map_err(|e| {
@@ -240,9 +245,22 @@ impl Application {
                                 timestamp: 0,
                                 payload: opus_data,
                             };
-                            if let Err(e) = sender.send(XzEvent::AddAudioPacketToQueue(packet)) {
-                                error!("Failed to send audio packet: {:?}", e);
-                                return;
+
+                            let sender = inner_sender1.clone();
+
+                            if audio_test_mode {
+                                // sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
+                                audio_state1
+                                    .audio_packet_buffer
+                                    .lock()
+                                    .unwrap()
+                                    .push_back(packet);
+                            } else {
+                                if let Err(e) = sender.send(XzEvent::AddAudioPacketToQueue(packet))
+                                {
+                                    error!("Failed to send audio packet: {:?}", e);
+                                    return;
+                                }
                             }
                         });
                     match result {
@@ -270,35 +288,16 @@ impl Application {
             .lock()
             .unwrap()
             .on_output(Box::new(move |data| {
-                if audio_test_mode {
-                    let pcm_u8: &[u8] = cast_slice(data.as_slice());
-                    // let audio_data_md5 = calc_md5_builtin(pcm_u8);
-                    // info!(
-                    //     "音频数据： Feed 后 -  md5: {} - 内容: {:?}",
-                    //     audio_data_md5, pcm_u8
-                    // );
-                    // // self.inner_sender.send(XzEvent::AudioTestEvent(data));
-                    // let pcm_u8: &[u8] = unsafe {
-                    //     slice::from_raw_parts(
-                    //         data.as_ptr() as *const u8, // Cast pointer to u8
-                    //         data.len() * 2,             // Length is doubled (i16 = 2 bytes)
-                    //     )
-                    // };
-
-                    audio_state.buffer.lock().unwrap().extend(pcm_u8);
-
-                    // codec_clone_for_pcm_player
-                    //     .lock()
-                    //     .unwrap()
-                    //     .test_play_pcm(pcm_u8)
-                    //     .unwrap();
-                } else {
-                    // 发送到编码线程,编码成opus.
-                    if let Err(e) = pcm_tx.send(data) {
-                        // 如果发送失败（比如编码线程挂了），打印个日志，不要 panic
-                        error!("Failed to send PCM to encoder: {:?}", e);
-                    }
+                // if audio_test_mode {
+                //     let pcm_u8: &[u8] = cast_slice(data.as_slice());
+                //     audio_state.buffer.lock().unwrap().extend(pcm_u8);
+                // } else {
+                // 发送到编码线程,编码成opus.
+                if let Err(e) = pcm_tx.send(data) {
+                    // 如果发送失败（比如编码线程挂了），打印个日志，不要 panic
+                    error!("Failed to send PCM to encoder: {:?}", e);
                 }
+                // }
 
                 // info!("Received audio data: {:?}", data);
                 // let encoder = Arc::clone(&opus_encoder);
@@ -357,6 +356,14 @@ impl Application {
         info!("开始处理内部事件 ...");
         // 处理内部事件
         let audio_state = Arc::clone(&self.shared_audio_state);
+
+        let codec_for_opus_player = Arc::clone(&codec_arc);
+        let mut opus_decoder = Arc::new(Mutex::new(Box::new(
+            OpusAudioDecoder::new(sample_rate, channels).unwrap(),
+        )));
+        let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+
+        let inner_sender = self.inner_sender.clone();
         loop {
             match self.inner_receiver.recv() {
                 Ok(event) => {
@@ -380,40 +387,33 @@ impl Application {
                             }
 
                             if audio_test_mode {
-                                let mut pcm_data = {
-                                    let mut buffer = audio_state.buffer.lock().unwrap();
+                                //下面的代码是用于PCM音频本地回放测试用的
+                                // let mut pcm_data = {
+                                //     let mut buffer = audio_state.buffer.lock().unwrap();
+                                //     std::mem::take(&mut *buffer)
+                                // };
+                                // let pcm_u8: &[u8] = pcm_data.make_contiguous();
+
+                                // info!("准备播放音频数据，内容: {} ", pcm_u8.len());
+
+                                // codec_clone_for_pcm_player
+                                //     .lock()
+                                //     .unwrap()
+                                //     .test_play_pcm(pcm_u8)
+                                //     .unwrap();
+
+                                // 下面的代码是用于Opus音频本地回放测试用的
+                                let opus_data: VecDeque<AudioStreamPacket> = {
+                                    let mut buffer =
+                                        audio_state.audio_packet_buffer.lock().unwrap();
                                     std::mem::take(&mut *buffer)
                                 };
-                                let pcm_u8: &[u8] = pcm_data.make_contiguous();
 
-                                info!("准备播放音频数据，内容: {} ", pcm_u8.len());
-
-                                // let audio_data_md5 = calc_md5_builtin(pcm_u8);
-                                // info!("音频数据： 传给CodeC 前 -  md5: {}", audio_data_md5);
-
-                                codec_clone_for_pcm_player
-                                    .lock()
-                                    .unwrap()
-                                    .test_play_pcm(pcm_u8)
-                                    .unwrap();
-                                // info!("XzEvent::SendAudioEvent");
-                                // let packets = {
-                                //     let mut queue = audio_packet_send_queue_arc.lock().unwrap();
-                                //     // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
-                                //     // 这完全等同于 C++ 的 std::move
-                                //     std::mem::take(&mut *queue)
-                                // };
-
-                                // let mut audio_decode_queue =
-                                //     self.audio_decode_queue.lock().unwrap();
-                                // // 此时锁已经释放了
-                                // for packet in packets {
-                                //     audio_decode_queue.push_back(packet);
-                                // }
-                                // //开始本地解码
-                                // self.decode_task_sender
-                                //     .send(XzEvent::AudioDecodeEvent)
-                                //     .unwrap();
+                                for packet in opus_data {
+                                    inner_sender
+                                        .send(XzEvent::AudioPacketReceived(packet))
+                                        .unwrap();
+                                }
                             }
                         }
                         // XzEvent::WebSocketConnected => {
@@ -577,18 +577,33 @@ impl Application {
                             }
                         }
                         XzEvent::AudioPacketReceived(audio_stream_packet) => {
-                            // 处理从服务器端接收到的音频数据包
-                            info!("XzEvent::AudioPacketReceived - 从服务器端接收到的音频数据包");
-                            if self.state == DeviceState::Speaking
-                                && audio_packet_send_queue_arc.lock().unwrap().len()
-                                    < MAX_AUDIO_PACKETS_IN_QUEUE
-                            {
-                                let mut audio_decode_queue =
-                                    self.audio_decode_queue.lock().unwrap();
-                                audio_decode_queue.push_back(audio_stream_packet);
-                                self.decode_task_sender
-                                    .send(XzEvent::AudioDecodeEvent)
+                            if self.audio_test_mode {
+                                // 在主线程中处理音频数据包
+                                info!("received audio data, play_opus_audio");
+                                codec_for_opus_player
+                                    .lock()
+                                    .unwrap()
+                                    .test_play_opus(
+                                        audio_stream_packet.payload.as_slice(),
+                                        &mut shared_pcm_buffer,
+                                    )
                                     .unwrap();
+                            } else {
+                                // 处理从服务器端接收到的音频数据包
+                                info!(
+                                    "XzEvent::AudioPacketReceived - 从服务器端接收到的音频数据包"
+                                );
+                                if self.state == DeviceState::Speaking
+                                    && audio_packet_send_queue_arc.lock().unwrap().len()
+                                        < MAX_AUDIO_PACKETS_IN_QUEUE
+                                {
+                                    let mut audio_decode_queue =
+                                        self.audio_decode_queue.lock().unwrap();
+                                    audio_decode_queue.push_back(audio_stream_packet);
+                                    self.decode_task_sender
+                                        .send(XzEvent::AudioDecodeEvent)
+                                        .unwrap();
+                                }
                             }
                         }
                         XzEvent::AddAudioPacketToQueue(packet) => {
@@ -1126,6 +1141,66 @@ fn play_pcm_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>, audio
                 info!("I2S write error on a chunk: {:?}", e);
                 break;
             }
+        }
+    }
+}
+
+fn play_opus_audio(
+    mut opus_decoder: Arc<Mutex<Box<OpusAudioDecoder>>>,
+    mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>,
+    opus_data: Vec<u8>,
+    pcm_buffer: &mut Vec<i16>,
+) {
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+
+    // decoder = decoder.decode(sample_rate, channels);
+
+    let decode_result = opus_decoder.lock().unwrap().decode(&opus_data);
+
+    // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
+    // let decode_result = decoder.decode(&opus_data);
+
+    match decode_result {
+        Ok(pcm_data) => {
+            info!("decode success.");
+            let is_stereo = channels == 2;
+
+            if !is_stereo {
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+                // 1. 清空旧数据，但保留容量（不释放内存）
+                pcm_buffer.clear();
+                pcm_buffer.resize(pcm_mono_data_len * 2, 0);
+                // let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_buffer[i * 2] = sample; // 左声道
+                    pcm_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_buffer.as_ptr() as *const u8,
+                        pcm_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            } else {
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_data.as_ptr() as *const u8,
+                        pcm_data.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+                play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            }
+        }
+        Err(e) => {
+            info!("Opus decode error: {:?}", e);
+            return;
         }
     }
 }

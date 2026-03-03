@@ -18,4 +18,6 @@ pub trait AudioCodec: Send {
     fn output_data(&mut self, data: &[u8]) -> Result<(), Error>;
 
     fn test_play_pcm(&mut self, data: &[u8]) -> Result<(), Error>;
+
+    fn test_play_opus(&mut self, data: &[u8], pcm_buffer: &mut Vec<i16>) -> Result<(), Error>;
 }

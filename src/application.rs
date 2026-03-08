@@ -1,59 +1,40 @@
 use std::{
     collections::VecDeque,
-    slice,
     sync::{
         mpsc::{self, channel, Receiver, Sender},
         Arc, Mutex, MutexGuard,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Error, Result};
-use bytemuck::cast_slice;
 use esp_idf_hal::{
     delay::BLOCK,
-    i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
-    peripheral,
     task::thread::ThreadSpawnConfiguration,
 };
-use esp_idf_svc::{eventloop::EspSystemEventLoop, wifi::WifiDeviceId};
-use esp_idf_sys::es32_component_opus::OPUS_GET_INBAND_FEC_REQUEST;
-use log::{debug, error, info, warn};
+
+use log::{error, info, warn};
 
 use crate::{
     audio::{
         codec::{
-            self,
             audio_codec::AudioCodec,
             opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
             AudioStreamPacket, MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
-        processor::{
-            afe_audio_processor::AfeAudioProcessor, audio_processor::AudioProcessor,
-            no_audio_processor::NoAudioProcessor,
-        },
+        processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
     },
-    axp173::{Axp173, Ldo},
-    boards::{
-        board::{self, Board},
-        jianglian_s3cam_board,
-    },
+    boards::{board::Board, jianglian_s3cam_board},
     common::{
         converter::bytes_to_i16_slice,
         enums::{AbortReason, AecMode, DeviceState, ListeningMode},
         event::XzEvent,
     },
     protocols::{protocol::Protocol, websocket::ws_protocol::WebSocketProtocol},
-    utils::md5::calc_md5_builtin,
-    wifi::{self, Esp32WifiDriver, WifiStation},
+    wifi::{Esp32WifiDriver, WifiStation},
 };
-use shared_bus::{BusManager, BusManagerSimple};
-
-pub struct ApplicationConfig {
-    sender: Sender<XzEvent>,
-}
 
 // 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
 pub type AudioBuffer = VecDeque<u8>;
@@ -82,6 +63,10 @@ pub struct Application {
     inner_receiver: Receiver<XzEvent>,
     aec_mode: AecMode,
     listening_mode: ListeningMode,
+
+    opus_encoder: Arc<Mutex<OpusAudioEncoder>>,
+    opus_decoder: Arc<Mutex<OpusAudioDecoder>>,
+
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待发送的音频队列
     audio_decode_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待解码的音频队列
@@ -143,6 +128,22 @@ impl Application {
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
+        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let channels = 2; //# 单声道
+        info!("create opus encoder");
+        let opus_encoder = Arc::new(Mutex::new(
+            OpusAudioEncoder::new(
+                sample_rate,
+                channels,
+                OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+            )
+            .unwrap(),
+        ));
+
+        let opus_decoder = Arc::new(Mutex::new(
+            OpusAudioDecoder::new(sample_rate, channels).unwrap(),
+        ));
+
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
@@ -160,8 +161,9 @@ impl Application {
             busy_decoding_audio: Arc::new(Mutex::new(false)),
             audio_test_mode: false,
             shared_audio_state,
+            opus_decoder,
+            opus_encoder,
         };
-
         Ok(instance)
     }
 
@@ -198,17 +200,6 @@ impl Application {
 
         let codec_clone = Arc::clone(&codec_arc);
 
-        let sample_rate = 16000; //# 采样率固定为16000Hz
-        let channels = 2; //# 单声道
-        info!("create opus encoder");
-        let opus_encoder = Arc::new(Mutex::new(
-            OpusAudioEncoder::new(
-                sample_rate,
-                channels,
-                OPUS_FRAME_DURATION_MS.try_into().unwrap(),
-            )
-            .unwrap(),
-        ));
         let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
 
         let audio_packet_send_queue_arc = Arc::clone(&self.audio_packet_queue);
@@ -217,10 +208,13 @@ impl Application {
 
         let audio_test_mode = self.audio_test_mode.clone();
         let audio_state = Arc::clone(&self.shared_audio_state);
+
+        let opus_encoder_arc = Arc::clone(&self.opus_encoder);
         let encode_thread = thread::Builder::new()
             .name("encoder_task".into())
             .stack_size(32 * 1024)
             .spawn(move || {
+                let opus_encoder = Arc::clone(&opus_encoder_arc);
                 for pcm_data in pcm_rx {
                     // 在这里做编码，环境单纯，没有锁竞争
                     // 打印数据长度，排查问题
@@ -360,14 +354,12 @@ impl Application {
         let audio_state = Arc::clone(&self.shared_audio_state);
 
         let codec_for_opus_player = Arc::clone(&codec_arc);
-        let mut opus_decoder_arc = Arc::new(Mutex::new(Box::new(
-            OpusAudioDecoder::new(sample_rate, channels).unwrap(),
-        )));
+
         let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
 
         let inner_sender = self.inner_sender.clone();
         loop {
-            let opus_decoder = Arc::clone(&opus_decoder_arc);
+            let opus_decoder = Arc::clone(&self.opus_decoder);
             match self.inner_receiver.recv() {
                 Ok(event) => {
                     match event {
@@ -742,6 +734,17 @@ impl Application {
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+
+                if self.listening_mode != ListeningMode::Realtime {
+                    self.audio_processor.lock().unwrap().stop();
+
+                    //                     #if CONFIG_USE_AFE_WAKE_WORD
+                    //             wake_word_->StartDetection();
+                    // #else
+                    //             wake_word_->StopDetection();
+                    // #endif
+                }
+                self.reset_decoder();
             }
             DeviceState::Listening => {
                 info!(
@@ -995,6 +998,27 @@ impl Application {
             self.set_device_state(DeviceState::Idle);
         }
     }
+
+    fn reset_decoder(&mut self) {
+        // std::lock_guard<std::mutex> lock(mutex_);
+        // opus_decoder_->ResetState();
+        // audio_decode_queue_.clear();
+        // audio_decode_cv_.notify_all();
+        // last_output_time_ = std::chrono::steady_clock::now();
+        // auto codec = Board::GetInstance().GetAudioCodec();
+        // codec->EnableOutput(true);
+
+        self.opus_decoder.lock().unwrap().reset_state();
+        self.audio_decode_queue.lock().unwrap().clear();
+        // self.audio_decode_cv.lock().unwrap().notify_all();
+        // self.last_output_time = Instant::now();
+        self.board
+            .get_audio_codec()
+            .lock()
+            .unwrap()
+            .enable_output(true)
+            .unwrap();
+    }
 }
 
 fn audio_loop(
@@ -1104,10 +1128,10 @@ fn start_audio_input(
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
 
-        // info!(
-        //     "application: read data from codec es7210, bytes_read: {}",
-        //     bytes_read
-        // );
+        info!(
+            "application: read data from codec es7210, bytes_read: {}",
+            bytes_read
+        );
 
         if bytes_read > 0 {
             let audio_data = &read_buffer[..bytes_read];

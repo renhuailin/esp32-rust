@@ -1,6 +1,7 @@
 use anyhow::Result;
 use esp_idf_sys::es32_component_opus::{
-    opus_decode, opus_decoder_create, opus_decoder_destroy, OpusDecoder,
+    opus_decode, opus_decoder_create, opus_decoder_ctl, opus_decoder_destroy, OpusDecoder,
+    OPUS_RESET_STATE,
 };
 use log::info;
 pub struct OpusAudioDecoder {
@@ -62,6 +63,14 @@ impl OpusAudioDecoder {
             ));
         } else {
             return Ok(pcm_buffer);
+        }
+    }
+
+    pub fn reset_state(&mut self) {
+        if !self.decoder.is_null() {
+            unsafe {
+                opus_decoder_ctl(self.decoder, OPUS_RESET_STATE as i32);
+            }
         }
     }
 }

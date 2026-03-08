@@ -25,7 +25,7 @@ pub trait AudioCodec: Send {
 
     fn play_opus(
         &mut self,
-        opus_decoder: Arc<Mutex<Box<OpusAudioDecoder>>>,
+        opus_decoder: Arc<Mutex<OpusAudioDecoder>>,
         data: &[u8],
         pcm_buffer: &mut Vec<i16>,
     ) -> Result<(), Error>;

@@ -155,7 +155,7 @@ impl AudioCodec for XiaozhiAudioCodec {
             match i2s_driver.lock().unwrap().write(chunk, BLOCK) {
                 Ok(bytes_written) => {
                     // 打印一些进度信息，方便调试
-                    info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                    // info!("Successfully wrote {} bytes to I2S.", bytes_written);
                 }
                 Err(e) => {
                     // 如果在写入过程中出错，打印错误并跳出循环
@@ -182,7 +182,7 @@ impl AudioCodec for XiaozhiAudioCodec {
             match self.i2s_driver.lock().unwrap().write(chunk, BLOCK) {
                 Ok(bytes_written) => {
                     // 打印一些进度信息，方便调试
-                    info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                    // info!("Successfully wrote {} bytes to I2S.", bytes_written);
                 }
                 Err(e) => {
                     // 如果在写入过程中出错，打印错误并跳出循环
@@ -194,20 +194,25 @@ impl AudioCodec for XiaozhiAudioCodec {
         Ok(())
     }
 
-    fn test_play_opus(&mut self, data: &[u8], pcm_buffer: &mut Vec<i16>) -> Result<(), Error> {
+    fn play_opus(
+        &mut self,
+        opus_decoder: Arc<Mutex<Box<OpusAudioDecoder>>>,
+        data: &[u8],
+        pcm_buffer: &mut Vec<i16>,
+    ) -> Result<(), Error> {
         let sample_rate = 16000; //# 采样率固定为16000Hz
         let channels = 2; //# 双声道
 
-        let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        // let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
 
-        let decode_result = opus_decoder.decode(&data);
+        let decode_result = opus_decoder.lock().unwrap().decode(&data);
 
         // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
         // let decode_result = decoder.decode(&opus_data);
 
         match decode_result {
             Ok(pcm_data) => {
-                info!("decode success.");
+                // info!("decode success.");
                 let is_stereo = channels == 2;
 
                 if !is_stereo {

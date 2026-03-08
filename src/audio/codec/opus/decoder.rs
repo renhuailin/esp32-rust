@@ -35,7 +35,7 @@ impl OpusAudioDecoder {
         //     对于16kHz采样率，60ms = 0.06s * 16000 samples/s = 960 samples
         //    为了安全，我们创建一个稍大一些的Vec。
         let max_frame_size: usize = (120 * self.sample_rate / 1000) as usize;
-        info!("max_frame_size: {}", max_frame_size);
+        // info!("max_frame_size: {}", max_frame_size);
 
         const CHANNELS: usize = 1; // 假设是单声道
         let mut pcm_buffer: Vec<i16> = vec![0; max_frame_size * CHANNELS];

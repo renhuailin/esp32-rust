@@ -1,4 +1,8 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Error, Result};
+
+use crate::audio::codec::opus::decoder::OpusAudioDecoder;
 
 pub trait AudioCodec: Send {
     fn set_output_volume(&mut self, volume: u8) -> Result<(), Error>;
@@ -19,5 +23,10 @@ pub trait AudioCodec: Send {
 
     fn test_play_pcm(&mut self, data: &[u8]) -> Result<(), Error>;
 
-    fn test_play_opus(&mut self, data: &[u8], pcm_buffer: &mut Vec<i16>) -> Result<(), Error>;
+    fn play_opus(
+        &mut self,
+        opus_decoder: Arc<Mutex<Box<OpusAudioDecoder>>>,
+        data: &[u8],
+        pcm_buffer: &mut Vec<i16>,
+    ) -> Result<(), Error>;
 }

@@ -112,7 +112,7 @@ impl Protocol for WebSocketProtocol {
     fn send_text(&mut self, text: &str) -> Result<()> {
         if let Some(client) = &mut self.client {
             if client.is_connected() {
-                info!("WebSocketProtocol: Sending text message...");
+                info!("WebSocketProtocol: Sending text message - {} ", text);
                 match client.send(FrameType::Text(false), text.as_bytes()) {
                     Ok(_) => info!("WebSocketProtocol: Hello message sent!"),
                     Err(e) => info!("WebSocketProtocol: Send error: {:?}", e),
@@ -178,7 +178,7 @@ impl Protocol for WebSocketProtocol {
             &config,
             timeout,
             move |event| {
-                info!("handle event");
+                // info!("handle event");
                 if let Ok(event) = event {
                     match event.event_type {
                         WebSocketEventType::BeforeConnect => {
@@ -394,6 +394,19 @@ impl Protocol for WebSocketProtocol {
     "state": "start",
     "mode": "{}"}}"##,
             self.device_id, mode
+        );
+        self.send_text(&message)?;
+        Ok(())
+    }
+
+    fn send_stop_listening(&mut self) -> Result<(), Error> {
+        //     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+        // SendText(message);
+        let message = format!(
+            r##"{{"session_id": "{}",
+    "type": "listen",
+    "state": "stop"}}"##,
+            self.device_id
         );
         self.send_text(&message)?;
         Ok(())

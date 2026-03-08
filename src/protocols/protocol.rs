@@ -24,4 +24,6 @@ pub trait Protocol {
     fn send_abort_speaking(&mut self, reason: AbortReason) -> Result<(), Error>;
 
     fn send_start_linstening(&mut self, listening_mode: ListeningMode) -> Result<(), Error>;
+
+    fn send_stop_listening(&mut self) -> Result<(), Error>;
 }

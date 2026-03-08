@@ -231,7 +231,7 @@ impl AudioCodec for XiaozhiAudioCodec {
                             pcm_buffer.len() * std::mem::size_of::<i16>(),
                         )
                     };
-                    self.test_play_pcm(pcm_stereo_bytes);
+                    self.test_play_pcm(pcm_stereo_bytes).unwrap();
                 } else {
                     let pcm_stereo_bytes: &[u8] = unsafe {
                         core::slice::from_raw_parts(
@@ -239,7 +239,7 @@ impl AudioCodec for XiaozhiAudioCodec {
                             pcm_data.len() * std::mem::size_of::<i16>(),
                         )
                     };
-                    self.test_play_pcm(pcm_stereo_bytes);
+                    self.test_play_pcm(pcm_stereo_bytes).unwrap();
                 }
             }
             Err(e) => {

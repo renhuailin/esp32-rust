@@ -72,10 +72,11 @@ pub enum AudioCommand {
     StartRecording,
     StopAndPlayback,
 }
-
 fn main() -> Result<()> {
     match run_app() {
-        Ok(_) => todo!(),
+        Ok(_) => {
+            info!("app 异常退出！");
+        }
         Err(e) => {
             error!("{}", e);
         }
@@ -90,6 +91,9 @@ fn run_app() -> Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
     log::set_max_level(LevelFilter::Debug);
 
+    info!("check my config ...");
+    check_my_configs();
+
     let app = Application::new();
     match app {
         Ok(mut application) => application.start()?,
@@ -98,6 +102,52 @@ fn run_app() -> Result<()> {
         }
     };
     Ok(())
+}
+
+fn check_my_configs() {
+    info!("检查配置....");
+    // 验证布尔类型的配置 (=y 的)
+    if cfg!(esp_idf_config_spiram_allow_stack_external_memory) {
+        info!("✅ 配置生效: 允许在外部 PSRAM 分配线程栈");
+    } else {
+        info!("❌ 配置失败: 栈只能在内部 SRAM 分配");
+    }
+
+    if cfg!(esp_idf_config_spiram_use_malloc) {
+        info!("✅ 配置生效: malloc 可以使用 PSRAM");
+    } else {
+        info!("❌ 配置失败: malloc 无法使用 PSRAM");
+    }
+
+    // 验证具体数值的配置 (这通常转换为字符串类型的 cfg)
+    // 比如 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+    // 会变成 esp_idf_config_pthread_task_stack_size_default="16384"
+    if cfg!(esp_idf_config_pthread_task_stack_size_default = "16384") {
+        info!("✅ 配置生效: 默认 pthread 栈大小是 16384");
+    } else {
+        info!("❌ 配置失败或被修改: 默认 pthread 栈大小不是 16384");
+    }
+
+    info!("CONFIG_SPIRAM = {}", esp_idf_sys::CONFIG_SPIRAM);
+    info!(
+        "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY = {}",
+        esp_idf_sys::CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    );
+
+    info!("当前日志级别： {}", esp_idf_sys::CONFIG_LOG_DEFAULT_LEVEL);
+
+    info!(
+        "是否使用自定义分区表 ： {}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM
+    );
+    info!(
+        "自定义分区表文件名称： {:?}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
+    );
+    info!(
+        "自定义分区表Offset： 0x{:X}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_OFFSET
+    );
 }
 
 fn main1() -> Result<()> {

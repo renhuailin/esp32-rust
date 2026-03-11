@@ -198,6 +198,14 @@ impl Application {
         //     Ok(())
         // })?;
 
+        let inner_sender = self.inner_sender.clone();
+        self.protocol.on_network_error(move |err| {
+            if let Err(e) = inner_sender.send(XzEvent::ProtocolNetworkError(err.to_string())) {
+                log::error!("Failed to send ProtocolNetworkError event: {:?}", e);
+            }
+            Ok(())
+        });
+
         let codec_clone = Arc::clone(&codec_arc);
 
         let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
@@ -544,6 +552,10 @@ impl Application {
                                                         );
                                                     }
                                                 } else if state == "stop" {
+                                                    info!(
+                                                        "处理文本消息结束: {} 当前状态: {:?}",
+                                                        text, self.state
+                                                    );
                                                     // TODO:: 看一下 background_task_ 在我们这里怎么实现，他的作用应该是等后台任务完成。
                                                     // background_task_->WaitForCompletion();
                                                     if self.state == DeviceState::Speaking {
@@ -665,6 +677,12 @@ impl Application {
                                 //     .unwrap();
                             }
                         }
+
+                        XzEvent::ProtocolNetworkError(err) => {
+                            self.set_device_state(DeviceState::Idle);
+                            error!("ProtocolNetworkError: {:?}", err);
+                        }
+
                         _ => {
                             info!("Received unhandled event: {:?}", event);
                         }
@@ -813,13 +831,11 @@ impl Application {
                     }
                 }
 
-                // self.set_listening_mode(if self.aec_mode == AecMode::Off {
-                //     ListeningMode::AutoStop
-                // } else {
-                //     ListeningMode::Realtime
-                // });
-
-                self.set_listening_mode(ListeningMode::Manual);
+                self.set_listening_mode(if self.aec_mode == AecMode::Off {
+                    ListeningMode::AutoStop
+                } else {
+                    ListeningMode::Realtime
+                });
             }
             DeviceState::Speaking => {
                 if let Err(e) = self.protocol.send_abort_speaking(AbortReason::None) {
@@ -1048,7 +1064,7 @@ fn audio_loop(
             start_audio_output(codec_arc, audio_processor_arc.clone());
         }
 
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1159,7 +1175,7 @@ fn start_audio_input(
         }
     }
 
-    // thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
+    thread::sleep(Duration::from_millis(10));
 
     // thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
 }

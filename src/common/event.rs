@@ -56,6 +56,7 @@ pub enum XzEvent {
     SendAudioEvent,                           // 发送音频数据事件
     AudioPacketReceived(AudioStreamPacket),
     WebsocketTextMessageReceived(String),
+    ProtocolNetworkError(String),
     AudioDecodeEvent,
     AudioTestEvent(Vec<i16>),
 }

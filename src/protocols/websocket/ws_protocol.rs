@@ -29,6 +29,7 @@ pub struct WebSocketProtocol {
     on_incoming_text: Option<Box<dyn FnMut(&str) -> Result<(), Error> + Send + 'static>>,
     on_incoming_audio:
         Option<Box<dyn FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static>>,
+    on_network_error: Option<Box<dyn FnMut(&str) -> Result<(), Error> + Send + 'static>>,
     last_incoming_time: Arc<Mutex<Option<Instant>>>, // 上一次收到服务器端数据的时间
     server_hello_received: Arc<Mutex<bool>>,
 }
@@ -57,6 +58,7 @@ impl WebSocketProtocol {
             on_incoming_audio: None,
             last_incoming_time: Arc::new(Mutex::new(None)),
             server_hello_received: Arc::new(Mutex::new(false)),
+            on_network_error: None,
         }
     }
 
@@ -106,6 +108,10 @@ impl WebSocketProtocol {
         }
         Ok(())
     }
+
+    pub fn set_error(&mut self, error: &str) {
+        self.on_network_error.as_mut().unwrap()(error);
+    }
 }
 
 impl Protocol for WebSocketProtocol {
@@ -115,7 +121,10 @@ impl Protocol for WebSocketProtocol {
                 info!("WebSocketProtocol: Sending text message - {} ", text);
                 match client.send(FrameType::Text(false), text.as_bytes()) {
                     Ok(_) => info!("WebSocketProtocol: Hello message sent!"),
-                    Err(e) => info!("WebSocketProtocol: Send error: {:?}", e),
+                    Err(e) => {
+                        self.set_error(&format!("Send error: {:?}", e));
+                        info!("WebSocketProtocol: Send error: {:?}", e);
+                    }
                 }
             } else {
                 info!("WebSocketProtocol: Client not connected, cannot send.");
@@ -200,9 +209,11 @@ impl Protocol for WebSocketProtocol {
 
                         WebSocketEventType::Close(reason) => {
                             info!("Websocket close, reason: {reason:?}");
+                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Closed => {
+                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
                             info!("Websocket closed");
                         }
 
@@ -410,6 +421,13 @@ impl Protocol for WebSocketProtocol {
         );
         self.send_text(&message)?;
         Ok(())
+    }
+
+    fn on_network_error<F>(&mut self, handler: F)
+    where
+        F: FnMut(&str) -> Result<()> + Send + 'static,
+    {
+        self.on_network_error = Some(Box::new(handler));
     }
 }
 

@@ -17,6 +17,10 @@ pub trait Protocol {
     where
         F: FnMut(&AudioStreamPacket) -> Result<(), Error> + Send + 'static;
 
+    fn on_network_error<F>(&mut self, handler: F)
+    where
+        F: FnMut(&str) -> Result<()> + Send + 'static;
+
     fn is_timeout(&self) -> bool;
 
     fn is_audio_channel_opened(&self) -> bool;

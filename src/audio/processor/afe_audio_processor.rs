@@ -12,7 +12,7 @@ use esp_idf_sys::es32_component_esp_sr::{
     ESP_VADN_PREFIX,
 };
 use esp_idf_sys::ESP_FAIL;
-use log::{debug, error, info};
+use log::{error, info};
 
 use crate::audio::{codec::audio_codec::AudioCodec, processor::audio_processor::AudioProcessor};
 
@@ -278,12 +278,12 @@ impl AfeAudioProcessor {
 
         //                 if (*res).vad_state == vad_state_t_VAD_SPEECH && !state_guard.is_speaking {
         //                     state_guard.is_speaking = true;
-        //                     vad_event = Some(true); // 需要触发“开始说话”
+        //                     vad_event = Some(true); // 需要触发"开始说话"
         //                 } else if (*res).vad_state == vad_state_t_VAD_SILENCE
         //                     && state_guard.is_speaking
         //                 {
         //                     state_guard.is_speaking = false;
-        //                     vad_event = Some(false); // 需要触发“停止说话”
+        //                     vad_event = Some(false); // 需要触发"停止说话"
         //                 }
 
         //                 // 2. 如果有事件发生，再获取回调函数进行调用
@@ -339,7 +339,6 @@ impl AfeAudioProcessor {
                 );
 
                 loop {
-                    info!("等待运行信号");
                     // --- 阶段 1: 等待运行信号 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
@@ -354,7 +353,6 @@ impl AfeAudioProcessor {
 
                     // 调用 C 函数获取音频数据
                     // portMAX_DELAY 在 Rust 中对应 u32::MAX
-                    info!("调用 C 函数获取音频数据");
                     let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
 
                     // --- 阶段 3: 重新获取锁处理结果 ---
@@ -375,39 +373,25 @@ impl AfeAudioProcessor {
                     // --- 阶段 4: 处理回调 ---
 
                     // VAD (语音活动检测) 状态变化
-                    // if let Some(ref mut vad_cb) = state_guard.vad_callback {
-                    //     if (*res).vad_state == vad_state_t_VAD_SPEECH
-                    //         && !state_guard.is_speaking
-                    //     {
-                    //         state_guard.is_speaking = true;
-                    //         vad_cb(true);
-                    //     } else if (*res).vad_state == vad_state_t_VAD_SILENCE
-                    //         && state_guard.is_speaking
-                    //     {
-                    //         state_guard.is_speaking = false;
-                    //         vad_cb(false);
-                    //     }
-                    // }
                     let mut vad_event = None; // 用于临时存储需要触发的事件
 
                     if (*res).vad_state == vad_state_t_VAD_SPEECH && !state_guard.is_speaking {
                         state_guard.is_speaking = true;
-                        vad_event = Some(true); // 需要触发“开始说话”
+                        vad_event = Some(true); // 需要触发"开始说话"
                     } else if (*res).vad_state == vad_state_t_VAD_SILENCE && state_guard.is_speaking
                     {
                         state_guard.is_speaking = false;
-                        vad_event = Some(false); // 需要触发“停止说话”
+                        vad_event = Some(false); // 需要触发"停止说话"
                     }
 
                     // 2. 如果有事件发生，再获取回调函数进行调用
                     // 此时上面的逻辑已经结束，state_guard 的借用已经释放，可以再次借用
                     if let Some(is_speaking) = vad_event {
-                        info!("VAD 状态变化: is_speaking!");
+                        info!("VAD 状态变化: is_speaking={}", is_speaking);
                         if let Some(ref mut vad_cb) = state_guard.vad_callback {
                             vad_cb(is_speaking);
                         }
                     }
-                    info!("输出音频数据");
                     // 输出音频数据
                     if let Some(ref mut out_cb) = state_guard.output_callback {
                         let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
@@ -427,46 +411,34 @@ impl AudioProcessor for AfeAudioProcessor {
     fn initialize(&mut self) {}
 
     fn feed(&mut self, data: &[i16]) {
-        info!("feed audio data!");
-        // unsafe {
-        //     ((*self.afe_iface.as_ptr()).feed.unwrap())(
-        //         self.afe_data.as_ptr(),
-        //         data.as_ptr() as *const _,
-        //     );
-        // }
-
-        info!("Feed iface ptr: {:p}", self.afe_iface.as_ptr()); // 在 feed 里
+        // 移除不必要的日志输出以减少栈使用
+        // info!("feed audio data!");
 
         if data.is_empty() {
-            info!("Feeding empty data!");
             return;
         }
-        info!("Feeding {} samples", data.len()); // 调试用，确认数据量不大
 
         let iface_ptr = self.afe_iface.as_ptr();
         let data_ptr = self.afe_data.as_ptr();
 
-        // 2. 检查指针有效性
+        // 检查指针有效性
         if iface_ptr.is_null() || data_ptr.is_null() {
             error!("Critical: AFE pointers are null!");
             return;
         }
 
-        info!("指针有效，开始进入unsafe块，调用c函数!");
         unsafe {
-            // 3. 检查函数指针
+            // 检查函数指针并调用
             if let Some(feed_func) = (*iface_ptr).feed {
-                // 4. 调用 C 函数
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
                 if ret != 0 {
-                    info!("Feed returned: {}", ret);
+                    // 只在错误时输出日志
+                    info!("Feed returned error: {}", ret);
                 }
             } else {
                 error!("Critical: AFE feed function pointer is null!");
             }
         }
-
-        info!("finish feeding audio data!");
     }
 
     fn start(&mut self) {

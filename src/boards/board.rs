@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Error;
 
-use crate::{audio::codec::audio_codec::AudioCodec, wifi::WifiStation};
+use crate::{audio::codec::audio_codec::AudioCodec, wifi::wifi_driver::WifiStation};
 
 // 定义主板的抽象
 pub trait Board {
@@ -19,6 +19,10 @@ pub trait Board {
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
 
     fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>>;
+
+    fn start_wifi_station(&mut self) -> Result<bool, Error>;
+
+    fn start_wifi_ap(&mut self) -> Result<bool, Error>;
 
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;

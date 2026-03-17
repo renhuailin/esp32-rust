@@ -43,7 +43,6 @@ use xiaoxin_esp32::{
     axp173::{Axp173, Ldo},
     lcd,
     led::WS2812RMT,
-    wifi::wifi,
 };
 // use xiaoxin_esp32::{Application, ApplicationState};
 // 1. 引入 std::sync::mpsc

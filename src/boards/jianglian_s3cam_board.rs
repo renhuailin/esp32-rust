@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{mpsc::Sender, Arc, Mutex, MutexGuard},
 };
 
@@ -16,6 +16,7 @@ use esp_idf_hal::{
     spi::SpiDriver,
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_sys::err_enum_t_ERR_TIMEOUT;
 use log::info;
 
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
     common::{event::XzEvent, gpio_button::Button},
     display::{lcd::st7789::LcdSt7789, Display},
     protocols::websocket::ws_protocol::WebSocketProtocol,
-    wifi::{self, Esp32WifiDriver, WifiStation},
+    wifi::wifi_driver::{Esp32WifiDriver, SsidMananger, WifiAP, WifiStation},
 };
 use shared_bus::{BusManager, BusManagerStd};
 
@@ -198,6 +199,26 @@ impl JiangLianS3CamBoard {
 
         Ok(())
     }
+
+    fn wifi_scan(&mut self) -> Result<()> {
+        let ssid = "CU_liu81802";
+        let password = "china-ops";
+
+        // let ssid = "1802";
+        // let password = "20250101";
+
+        self.wifi_driver.connect(ssid, password)?;
+        Ok(())
+    }
+
+    fn start_wifi_ap(&mut self) -> Result<()> {
+        let ssid = "xiaozhi_ap";
+        let password = "";
+
+        self.wifi_driver.start_ap(ssid, password)?;
+
+        Ok(())
+    }
 }
 
 impl Board for JiangLianS3CamBoard {
@@ -212,13 +233,8 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
-        let ssid = "CU_liu81802";
-        let password = "china-ops";
-
-        // let ssid = "1802";
-        // let password = "20250101";
-
-        self.wifi_driver.connect(ssid, password)?;
+        // self.wifi_scan()?;
+        self.start_wifi_ap()?;
         Ok(())
     }
 
@@ -228,5 +244,48 @@ impl Board for JiangLianS3CamBoard {
 
     fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>> {
         return Arc::clone(&self.audio_codec);
+    }
+
+    fn start_wifi_station(&mut self) -> std::result::Result<bool, Error> {
+        let ssid_manager = SsidMananger::get_instance();
+
+        let available_ap_names = self.wifi_driver.get_available_access_points()?;
+
+        let ssid_list = ssid_manager.get_ssid_list()?;
+        let saved_ap_names = ssid_list
+            .iter()
+            .map(|ssid| ssid.ssid.clone())
+            .collect::<Vec<_>>();
+
+        let set1: HashSet<_> = available_ap_names.iter().collect();
+        let set2: HashSet<_> = saved_ap_names.iter().collect();
+
+        // 2. 使用 intersection 找交集
+        // 返回的是一个迭代器，里面依然是引用 (&&i32)
+        let intersection: Vec<&String> = set1
+            .intersection(&set2)
+            .copied() // 把 &&i32 解引用成 i32 (也就是克隆一层引用指向的值)
+            .collect();
+
+        for ssid_item in ssid_list {
+            if intersection.contains(&&ssid_item.ssid) {
+                let connet_result = self
+                    .wifi_driver
+                    .connect(ssid_item.ssid.as_str(), ssid_item.password.as_str());
+
+                if let Err(_) = connet_result {
+                    continue;
+                } else {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn start_wifi_ap(&mut self) -> std::result::Result<bool, Error> {
+        self.wifi_driver.start_ap("xiaozhi_ap", "")?;
+        Ok(true)
     }
 }

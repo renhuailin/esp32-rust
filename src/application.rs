@@ -33,7 +33,7 @@ use crate::{
         event::XzEvent,
     },
     protocols::{protocol::Protocol, websocket::ws_protocol::WebSocketProtocol},
-    wifi::{Esp32WifiDriver, WifiStation},
+    wifi::wifi_driver::{Esp32WifiDriver, WifiStation},
 };
 
 // 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
@@ -119,11 +119,11 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
+        //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
         // let audio_processor = Arc::new(Mutex::new(
         //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
         // ));
 
-        //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
         let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
@@ -192,9 +192,7 @@ impl Application {
 
         // let sender1 = self.inner_sender.clone();
         // self.protocol.on_incoming_audio(move |packet| {
-        //     if let Err(e) = sender1.send(XzEvent::AudioPacketReceived(packet.clone())) {
-        //         log::error!("Failed to send WebsocketTextMessageReceived event: {:?}", e);
-        //     }
+        //     self.set_device_state(DeviceState::Activating);
         //     Ok(())
         // })?;
 

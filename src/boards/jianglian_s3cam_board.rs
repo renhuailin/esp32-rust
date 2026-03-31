@@ -233,8 +233,8 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
-        // self.wifi_scan()?;
-        self.start_wifi_ap()?;
+        self.wifi_scan()?;
+        // self.start_wifi_ap()?;
         Ok(())
     }
 

@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::num::NonZeroU32;
+use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
 
@@ -27,8 +29,15 @@ use esp_idf_hal::{
     spi::SpiDriver,
 };
 use esp_idf_svc::hal::prelude::*;
+use esp_idf_svc::http::Method;
+use esp_idf_svc::io;
+use esp_idf_svc::ota::{EspFirmwareInfoLoad, EspOta, EspOtaUpdate, FirmwareInfo};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
-use esp_idf_sys::EspError;
+use esp_idf_sys::{
+    esp_partition_find, esp_partition_get, esp_partition_next,
+    esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
+    esp_partition_type_t_ESP_PARTITION_TYPE_APP, EspError,
+};
 use futures::{select, FutureExt};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
@@ -93,6 +102,8 @@ fn run_app() -> Result<()> {
     info!("check my config ...");
     check_my_configs();
 
+    info!("run app ...");
+
     let app = Application::new();
     match app {
         Ok(mut application) => application.start()?,
@@ -135,18 +146,18 @@ fn check_my_configs() {
 
     info!("当前日志级别： {}", esp_idf_sys::CONFIG_LOG_DEFAULT_LEVEL);
 
-    info!(
-        "是否使用自定义分区表 ： {}",
-        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM
-    );
-    info!(
-        "自定义分区表文件名称： {:?}",
-        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
-    );
-    info!(
-        "自定义分区表Offset： 0x{:X}",
-        esp_idf_sys::CONFIG_PARTITION_TABLE_OFFSET
-    );
+    // info!(
+    //     "是否使用自定义分区表 ： {}",
+    //     esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM
+    // );
+    // info!(
+    //     "自定义分区表文件名称： {:?}",
+    //     esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
+    // );
+    // info!(
+    //     "自定义分区表Offset： 0x{:X}",
+    //     esp_idf_sys::CONFIG_PARTITION_TABLE_OFFSET
+    // );
 }
 
 fn main1() -> Result<()> {

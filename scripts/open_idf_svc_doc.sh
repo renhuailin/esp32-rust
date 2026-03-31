@@ -1,0 +1,1 @@
+cargo doc --open --package esp-idf-svc

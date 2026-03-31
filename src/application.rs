@@ -1,5 +1,7 @@
 use std::{
     collections::VecDeque,
+    ffi::CStr,
+    ptr,
     sync::{
         mpsc::{self, channel, Receiver, Sender},
         Arc, Mutex, MutexGuard,
@@ -15,6 +17,11 @@ use esp_idf_hal::{
     task::thread::ThreadSpawnConfiguration,
 };
 
+use esp_idf_sys::{
+    esp_partition_find, esp_partition_get, esp_partition_next,
+    esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
+    esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+};
 use log::{error, info, warn};
 
 use crate::{
@@ -51,6 +58,137 @@ impl SharedAudioState {
         Self {
             buffer: Mutex::new(VecDeque::new()),
             audio_packet_buffer: Mutex::new(VecDeque::new()),
+        }
+    }
+}
+
+use embedded_svc::http::client::Client as HttpClient;
+use esp_idf_svc::{
+    http::{
+        client::{EspHttpConnection, Response},
+        Method,
+    },
+    io,
+    ota::{EspFirmwareInfoLoad, EspOta, EspOtaUpdate, FirmwareInfo},
+};
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+fn check_new_version() -> anyhow::Result<()> {
+    info!("check_new_version, current version is {}", VERSION);
+
+    let mut client = HttpClient::wrap(EspHttpConnection::new(&Default::default())?);
+    check_for_updates(&mut client)?;
+    Ok(())
+}
+
+mod http_status {
+    pub const OK: u16 = 200;
+    pub const NOT_MODIFIED: u16 = 304;
+}
+
+pub fn check_for_updates(client: &mut HttpClient<EspHttpConnection>) -> anyhow::Result<()> {
+    let mut ota = EspOta::new()?;
+
+    let current_version = VERSION;
+    info!("Current version: {current_version}");
+
+    info!("Checking for updates...");
+
+    let headers = [
+        ("Accept", "application/octet-stream"),
+        ("X-Esp32-Version", &current_version),
+    ];
+
+    let ota_firmware_url = "http://192.168.1.145:3000/api/v1/ota/update";
+
+    let request = client.request(Method::Get, ota_firmware_url, &headers)?;
+    let response = request.submit()?;
+
+    if response.status() == http_status::NOT_MODIFIED {
+        info!("Already up to date");
+    } else if response.status() == http_status::OK {
+        info!("An update is available, updating...");
+        // let mut update = ota.initiate_update()?;
+
+        info!("print app partition...");
+        unsafe {
+            let mut it = esp_partition_find(
+                esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+                esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
+                ptr::null(),
+            );
+            while !it.is_null() {
+                let part = esp_partition_get(it);
+                let name = CStr::from_ptr((*part).label.as_ptr()).to_string_lossy();
+                info!(
+                    "Found app partition: {}, offset: 0x{:x}, size: 0x{:x}",
+                    name,
+                    (*part).address,
+                    (*part).size
+                );
+                it = esp_partition_next(it);
+            }
+        }
+
+        info!("initiate update...");
+        match ota.initiate_update() {
+            Ok(mut update) => {
+                info!("initiate updated");
+                match download_update(response, &mut update) {
+                    Ok(_) => {
+                        info!("Update done. Restarting...");
+                        update.complete()?;
+                        esp_idf_svc::hal::reset::restart();
+                    }
+                    Err(err) => {
+                        error!("Update failed: {err}");
+                        update.abort()?;
+                    }
+                };
+            }
+            Err(err) => {
+                error!("initiate update failed: {err}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn download_update(
+    mut response: Response<&mut EspHttpConnection>,
+    update: &mut EspOtaUpdate<'_>,
+) -> anyhow::Result<()> {
+    let mut buffer = [0_u8; 1024];
+
+    // You can optionally read the firmware metadata header.
+    // It contains information like version and signature you can check before continuing the update
+    let update_info = read_firmware_info(&mut buffer, &mut response, update)?;
+    info!("Update version: {}", update_info.version);
+
+    io::utils::copy(response, update, &mut buffer)?;
+
+    Ok(())
+}
+
+fn read_firmware_info(
+    buffer: &mut [u8],
+    response: &mut Response<&mut EspHttpConnection>,
+    update: &mut EspOtaUpdate,
+) -> anyhow::Result<FirmwareInfo> {
+    let update_info_load = EspFirmwareInfoLoad {};
+    let mut update_info = FirmwareInfo {
+        version: Default::default(),
+        released: Default::default(),
+        description: Default::default(),
+        signature: Default::default(),
+        download_id: Default::default(),
+    };
+
+    loop {
+        let n = response.read(buffer)?;
+        update.write(&buffer[0..n])?;
+        if update_info_load.fetch(&buffer[0..n], &mut update_info)? {
+            return Ok(update_info);
         }
     }
 }
@@ -106,6 +244,9 @@ impl Application {
 
         board.init()?;
         info!("board init success");
+
+        // info!("check new version ...");
+        // check_new_version()?;
 
         let mac_address = board.get_wifi_driver().get_mac_address()?;
         let sender_for_protocol = inner_sender.clone();

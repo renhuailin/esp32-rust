@@ -55,6 +55,11 @@ pub trait WifiStation {
 
     // 如果你需要省电管理，可以加这个
     // fn set_power_save(&mut self, enabled: bool) -> Result<()>;
+
+    fn set_on_new_access_point_add_handler(
+        &mut self,
+        on_new_access_point_add: Box<dyn FnMut(&str, &str) -> Result<(), Error> + Send + 'static>,
+    );
 }
 
 pub trait WifiAP {
@@ -196,6 +201,13 @@ impl WifiStation for Esp32WifiDriver {
             .collect::<Vec<String>>();
         Ok(ap_names)
     }
+
+    fn set_on_new_access_point_add_handler(
+        &mut self,
+        on_new_access_point_add: Box<dyn FnMut(&str, &str) -> Result<(), Error> + Send + 'static>,
+    ) {
+        self.on_new_access_point_add = Some(on_new_access_point_add);
+    }
 }
 
 impl WifiAP for Esp32WifiDriver {
@@ -264,33 +276,39 @@ impl WifiAP for Esp32WifiDriver {
 
         let mut http_server = EspHttpServer::new(&server_configuration)?;
 
-        http_server.fn_handler::<anyhow::Error, _>("/post", Method::Post, |mut req| {
-            let len = req.content_len().unwrap_or(0) as usize;
+        let on_new_access_point_add = &self.on_new_access_point_add;
 
-            if len > MAX_LEN {
-                req.into_status_response(413)?
-                    .write_all("Request too big".as_bytes())?;
-                return Ok(());
-            }
+        // http_server.fn_handler::<anyhow::Error, _>("/post", Method::Post, |mut req| {
+        //     let len = req.content_len().unwrap_or(0) as usize;
 
-            let mut buf = vec![0; len];
-            req.read_exact(&mut buf)?;
-            let mut resp = req.into_ok_response()?;
+        //     if len > MAX_LEN {
+        //         req.into_status_response(413)?
+        //             .write_all("Request too big".as_bytes())?;
+        //         return Ok(());
+        //     }
 
-            if let std::result::Result::Ok(form) = serde_json::from_slice::<FormData>(&buf) {
-                write!(
-                    resp,
-                    "Hello, WIFI SSID: {}.  WiFi Password: {}!",
-                    form.wifi_ssid, form.wifi_password
-                )?;
-                let mut ssid_manager = SsidMananger::get_instance();
-                ssid_manager.add_ssid(form.wifi_ssid, form.wifi_password)?;
-            } else {
-                resp.write_all("JSON error".as_bytes())?;
-            }
+        //     let mut buf = vec![0; len];
+        //     req.read_exact(&mut buf)?;
+        //     let mut resp = req.into_ok_response()?;
 
-            Ok(())
-        })?;
+        //     if let std::result::Result::Ok(form) = serde_json::from_slice::<FormData>(&buf) {
+        //         write!(
+        //             resp,
+        //             "Hello, WIFI SSID: {}.  WiFi Password: {}!",
+        //             form.wifi_ssid, form.wifi_password
+        //         )?;
+        //         let mut ssid_manager = SsidMananger::get_instance();
+        //         ssid_manager.add_ssid(form.wifi_ssid, form.wifi_password)?;
+
+        //         if let Some(new_access_point_add) = on_new_access_point_add {
+        //             new_access_point_add(form.wifi_ssid, form.wifi_password).unwrap();
+        //         }
+        //     } else {
+        //         resp.write_all("JSON error".as_bytes())?;
+        //     }
+
+        //     Ok(())
+        // })?;
 
         self.http_server = Some(http_server);
         Ok(())

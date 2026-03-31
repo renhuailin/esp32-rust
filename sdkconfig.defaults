@@ -1,3 +1,10 @@
+# 覆盖项目名称
+CONFIG_APP_PROJECT_NAME="xiaoxin_esp32"
+
+# 覆盖版本号
+CONFIG_APP_PROJECT_VER="0.1.1"
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+
 # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768

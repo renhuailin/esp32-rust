@@ -104,9 +104,9 @@ pub fn check_for_updates(client: &mut HttpClient<EspHttpConnection>) -> anyhow::
     let response = request.submit()?;
 
     if response.status() == http_status::NOT_MODIFIED {
-        info!("Already up to date");
+        info!("OTA: Already up to date");
     } else if response.status() == http_status::OK {
-        info!("An update is available, updating...");
+        info!("OTA: An update is available, updating...");
         // let mut update = ota.initiate_update()?;
 
         info!("print app partition...");
@@ -245,8 +245,8 @@ impl Application {
         board.init()?;
         info!("board init success");
 
-        // info!("check new version ...");
-        // check_new_version()?;
+        info!("check new version ...");
+        check_new_version()?;
 
         let mac_address = board.get_wifi_driver().get_mac_address()?;
         let sender_for_protocol = inner_sender.clone();

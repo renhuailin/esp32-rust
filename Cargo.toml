@@ -1,6 +1,6 @@
 [package]
 name = "xiaoxin_esp32"
-version = "0.1.0"
+version = "0.1.2"
 authors = ["任懷林 <renhuailin@gmail.com>"]
 edition = "2021"
 resolver = "2"
@@ -80,6 +80,7 @@ serde = { version = "1", default-features = false, features = ["derive"]}
 serde_json = "1.0.145"
 bytemuck = "1.24.0"
 embedded-svc = { version = "0.28.1", default-features = false }
+semver = "1.0.27"
 
 [package.metadata.esp-idf-sys]
 extra_components = [

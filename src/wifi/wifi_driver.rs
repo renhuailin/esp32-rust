@@ -1,15 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Error, Ok, Result};
-use embedded_svc::{
-    http::{Headers, Method},
-    io::{Read, Write},
-};
 use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::peripheral,
     http::server::EspHttpServer,
+    ipv4::IpInfo,
     nvs::EspNvsPartition,
     wifi::{
         AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration,
@@ -17,20 +14,8 @@ use esp_idf_svc::{
     },
 };
 use log::info;
-use serde::Deserialize;
 
-use crate::setting::nvs_setting::NvsSetting;
-
-const STACK_SIZE: usize = 10240;
-
-// Max payload length
-const MAX_LEN: usize = 128;
-
-#[derive(Deserialize)]
-struct FormData<'a> {
-    wifi_ssid: &'a str,
-    wifi_password: &'a str,
-}
+use crate::common::httpd_server::{create_server, start_http_server};
 
 /// 定义 WiFi 模块必须具备的行为
 pub trait WifiStation {
@@ -63,7 +48,7 @@ pub trait WifiStation {
 }
 
 pub trait WifiAP {
-    fn start_ap(&mut self, ssid: &str, password: &str) -> Result<()>;
+    fn start_ap(&mut self, ssid: &str, password: &str) -> Result<IpInfo>;
     fn start_http_server(&mut self) -> Result<()>;
     fn stop_http_server(&mut self) -> Result<()>;
 }
@@ -211,7 +196,7 @@ impl WifiStation for Esp32WifiDriver {
 }
 
 impl WifiAP for Esp32WifiDriver {
-    fn start_ap(&mut self, ssid: &str, password: &str) -> Result<()> {
+    fn start_ap(&mut self, ssid: &str, password: &str) -> Result<IpInfo> {
         // 1. 初始化 EspWifi 驱动
         let mut wifi = self.wifi.lock().unwrap();
 
@@ -265,50 +250,19 @@ impl WifiAP for Esp32WifiDriver {
         info!("IP Address: {}", ip_info.ip);
         info!("Subnet Mask: {}", ip_info.subnet.mask);
 
-        Ok(())
+        Ok(ip_info)
     }
 
     fn start_http_server(&mut self) -> Result<()> {
-        let server_configuration = esp_idf_svc::http::server::Configuration {
-            stack_size: STACK_SIZE,
-            ..Default::default()
-        };
+        // let server_configuration = esp_idf_svc::http::server::Configuration {
+        //     stack_size: STACK_SIZE,
+        //     ..Default::default()
+        // };
 
-        let mut http_server = EspHttpServer::new(&server_configuration)?;
+        let mut http_server = create_server()?;
+        start_http_server(&mut http_server)?;
 
-        let on_new_access_point_add = &self.on_new_access_point_add;
-
-        // http_server.fn_handler::<anyhow::Error, _>("/post", Method::Post, |mut req| {
-        //     let len = req.content_len().unwrap_or(0) as usize;
-
-        //     if len > MAX_LEN {
-        //         req.into_status_response(413)?
-        //             .write_all("Request too big".as_bytes())?;
-        //         return Ok(());
-        //     }
-
-        //     let mut buf = vec![0; len];
-        //     req.read_exact(&mut buf)?;
-        //     let mut resp = req.into_ok_response()?;
-
-        //     if let std::result::Result::Ok(form) = serde_json::from_slice::<FormData>(&buf) {
-        //         write!(
-        //             resp,
-        //             "Hello, WIFI SSID: {}.  WiFi Password: {}!",
-        //             form.wifi_ssid, form.wifi_password
-        //         )?;
-        //         let mut ssid_manager = SsidMananger::get_instance();
-        //         ssid_manager.add_ssid(form.wifi_ssid, form.wifi_password)?;
-
-        //         if let Some(new_access_point_add) = on_new_access_point_add {
-        //             new_access_point_add(form.wifi_ssid, form.wifi_password).unwrap();
-        //         }
-        //     } else {
-        //         resp.write_all("JSON error".as_bytes())?;
-        //     }
-
-        //     Ok(())
-        // })?;
+        // let on_new_access_point_add = &self.on_new_access_point_add;
 
         self.http_server = Some(http_server);
         Ok(())
@@ -460,63 +414,4 @@ pub fn start_ap<'a>(
     info!("Subnet Mask: {}", ip_info.subnet.mask);
 
     Ok(wifi)
-}
-
-pub struct SsidItem {
-    pub ssid: String,
-    pub password: String,
-}
-pub struct SsidMananger {}
-
-const MAX_SSID_COUNT: usize = 10;
-impl SsidMananger {
-    pub fn get_instance() -> Self {
-        Self {}
-    }
-    pub fn get_ssid_list(&self) -> Result<Vec<SsidItem>> {
-        let nvs = NvsSetting::new("wifi")?;
-
-        let mut vec = Vec::new();
-        for i in 0..MAX_SSID_COUNT {
-            let ssid_key = format!("ssid_{}", i);
-            let password_key = format!("password_{}", i);
-            let ssid = nvs.get_string(ssid_key.as_str());
-            let password = nvs.get_string(password_key.as_str());
-            if ssid.is_some() && password.is_some() {
-                vec.push(SsidItem {
-                    ssid: ssid.unwrap(),
-                    password: password.unwrap(),
-                })
-            }
-        }
-
-        Ok(vec)
-    }
-
-    pub fn add_ssid(&mut self, ssid: &str, password: &str) -> Result<()> {
-        let mut ssid_list = self.get_ssid_list()?;
-        if ssid_list.len() >= MAX_SSID_COUNT {
-            // TODO: 这里可以优化一下，把最不常用的wifi删除掉
-            ssid_list.remove(0);
-        }
-        ssid_list.push(SsidItem {
-            ssid: ssid.to_string(),
-            password: password.to_string(),
-        });
-        self.save_to_nvs(ssid_list.as_slice())?;
-        Ok(())
-    }
-
-    fn save_to_nvs(&mut self, ssid_list: &[SsidItem]) -> Result<()> {
-        let mut nvs = NvsSetting::new("wifi")?;
-
-        for (i, item) in ssid_list.iter().enumerate() {
-            let ssid_key = format!("ssid_{}", i);
-            let password_key = format!("password_{}", i);
-            nvs.set_string(ssid_key.as_str(), &item.ssid)?;
-            nvs.set_string(password_key.as_str(), &item.password)?;
-        }
-
-        Ok(())
-    }
 }

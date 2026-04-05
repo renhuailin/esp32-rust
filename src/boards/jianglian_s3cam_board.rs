@@ -17,16 +17,23 @@ use esp_idf_hal::{
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_sys::err_enum_t_ERR_TIMEOUT;
-use log::info;
+use log::{error, info};
 
 use crate::{
     audio::codec::{audio_codec::AudioCodec, xiaozhi_audio_codec::XiaozhiAudioCodec},
     axp173::{Axp173, Ldo},
     boards::board::Board,
-    common::{event::XzEvent, gpio_button::Button},
+    common::{
+        event::XzEvent,
+        gpio_button::Button,
+        httpd_server::{create_server, start_http_server},
+    },
     display::{lcd::st7789::LcdSt7789, Display},
     protocols::websocket::ws_protocol::WebSocketProtocol,
-    wifi::wifi_driver::{Esp32WifiDriver, SsidMananger, WifiAP, WifiStation},
+    wifi::{
+        ssid_manager::SsidMananger,
+        wifi_driver::{Esp32WifiDriver, WifiAP, WifiStation},
+    },
 };
 use shared_bus::{BusManager, BusManagerStd};
 
@@ -211,14 +218,14 @@ impl JiangLianS3CamBoard {
         Ok(())
     }
 
-    fn start_wifi_ap(&mut self) -> Result<()> {
-        let ssid = "xiaozhi_ap";
-        let password = "";
+    // fn start_wifi_ap(&mut self) -> Result<()> {
+    //     let ssid = "xiaozhi_ap";
+    //     let password = "";
 
-        self.wifi_driver.start_ap(ssid, password)?;
+    //     self.wifi_driver.start_ap(ssid, password)?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 impl Board for JiangLianS3CamBoard {
@@ -234,7 +241,7 @@ impl Board for JiangLianS3CamBoard {
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
         self.wifi_scan()?;
-        // self.start_wifi_ap()?;
+        self.start_wifi_ap()?;
         Ok(())
     }
 
@@ -249,8 +256,10 @@ impl Board for JiangLianS3CamBoard {
     fn start_wifi_station(&mut self) -> std::result::Result<bool, Error> {
         let ssid_manager = SsidMananger::get_instance();
 
+        // scanning available access points
         let available_ap_names = self.wifi_driver.get_available_access_points()?;
 
+        // get saved ssid list
         let ssid_list = ssid_manager.get_ssid_list()?;
         let saved_ap_names = ssid_list
             .iter()
@@ -285,7 +294,24 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn start_wifi_ap(&mut self) -> std::result::Result<bool, Error> {
-        self.wifi_driver.start_ap("xiaozhi_ap", "")?;
+        match self.wifi_driver.start_ap("xiaozhi_ap", "") {
+            std::result::Result::Ok(ip_info) => match self.wifi_driver.start_http_server() {
+                std::result::Result::Ok(_) => {
+                    info!(
+                        "成功启动http server,请访问 http://{}",
+                        ip_info.ip.to_string()
+                    );
+                }
+                Err(e) => {
+                    error!("启动http server 出错：{:?}", e);
+                    return Err(e.into());
+                }
+            },
+            Err(err) => {
+                error!("启动http server 出错：{:?}", err);
+            }
+        }
+
         Ok(true)
     }
 }

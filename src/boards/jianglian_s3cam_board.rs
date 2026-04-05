@@ -11,8 +11,10 @@ use esp_idf_hal::{
         config::{DataBitWidth, StdConfig},
         I2sBiDir, I2sDriver,
     },
+    ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
     peripheral,
     prelude::Peripherals,
+    prelude::*,
     spi::SpiDriver,
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -76,7 +78,19 @@ impl JiangLianS3CamBoard {
         )
         .unwrap();
 
-        let display = LcdSt7789::new(driver, dc.into(), cs.into())?;
+        let timer_driver = LedcTimerDriver::new(
+            peripherals.ledc.timer0,
+            &TimerConfig::new().frequency(25000.Hz().into()),
+        )
+        .unwrap();
+        let backlight_pin = pins.gpio8;
+
+        // 2. 配置LEDC通道，并绑定到背光引脚
+        let channel_led: LedcDriver<'_> =
+            LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
+
+        let display = LcdSt7789::new(driver, dc.into(), cs.into(), channel_led)?;
+        // display.init()?;
 
         // 初始化 I2C 驱动和总线管理器
         let sda = pins.gpio1;
@@ -146,6 +160,8 @@ impl JiangLianS3CamBoard {
     }
 
     pub fn init(&mut self) -> Result<()> {
+        self.display.show_qrcode("https://www.qq.com");
+
         self.init_wifi()?;
         info!("Init power management");
         self.init_power_management()?;

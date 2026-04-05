@@ -245,8 +245,8 @@ impl Application {
         board.init()?;
         info!("board init success");
 
-        info!("check new version ...");
-        check_new_version()?;
+        // info!("check new version ...");
+        // check_new_version()?;
 
         let mac_address = board.get_wifi_driver().get_mac_address()?;
         let sender_for_protocol = inner_sender.clone();

@@ -761,12 +761,15 @@ impl Application {
                                     && audio_packet_send_queue_arc.lock().unwrap().len()
                                         < MAX_AUDIO_PACKETS_IN_QUEUE
                                 {
+                                    //在子线程中处理音频解码
                                     // let mut audio_decode_queue =
                                     //     self.audio_decode_queue.lock().unwrap();
                                     // audio_decode_queue.push_back(audio_stream_packet);
                                     // self.decode_task_sender
                                     //     .send(XzEvent::AudioDecodeEvent)
                                     //     .unwrap();
+
+                                    // 在主线程中处理音频数据包
                                     match codec_for_opus_player.lock().unwrap().play_opus(
                                         opus_decoder,
                                         audio_stream_packet.payload.as_slice(),

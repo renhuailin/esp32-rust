@@ -766,9 +766,19 @@ impl Application {
                                     let mut audio_decode_queue =
                                         self.audio_decode_queue.lock().unwrap();
                                     audio_decode_queue.push_back(audio_stream_packet);
-                                    self.decode_task_sender
+
+                                    match self
+                                        .decode_task_sender
+                                        .clone()
                                         .send(XzEvent::AudioDecodeEvent)
-                                        .unwrap();
+                                    {
+                                        Ok(_) => {
+                                            info!("send audio decode event ok");
+                                        }
+                                        Err(e) => {
+                                            error!("send audio decode event error: {:?}", e);
+                                        }
+                                    }
 
                                     // // 在主线程中处理音频数据包
                                     // match codec_for_opus_player.lock().unwrap().play_opus(
@@ -1062,7 +1072,7 @@ impl Application {
             // .set()
             // .unwrap();
 
-            // test_audio_decode_task(rx, audio_packet_queue_arc, codec);
+            run_audio_decode_task(rx, audio_packet_queue_arc, codec);
 
             // test_audio_decode_task();
 
@@ -1310,10 +1320,10 @@ fn start_audio_input(
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
 
-        info!(
-            "application: read data from codec es7210, bytes_read: {}",
-            bytes_read
-        );
+        // info!(
+        //     "application: read data from codec es7210, bytes_read: {}",
+        //     bytes_read
+        // );
 
         if bytes_read > 0 {
             let audio_data = &read_buffer[..bytes_read];
@@ -1493,54 +1503,56 @@ fn play_opus_audio(
     }
 }
 
-fn test_audio_decode_task(// rx: Receiver<XzEvent>,
-    // audio_packet_queue_arc: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
-    // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+fn run_audio_decode_task(
+    rx: Receiver<XzEvent>,
+    audio_packet_queue_arc: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
+    codec: Arc<Mutex<dyn AudioCodec + 'static>>,
 ) {
     let sample_rate = 16000; //# 采样率固定为16000Hz
     let channels = 2; //# 单声道
-    let task_closure = Box::new(|| {
+
+    let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
         info!("Starting audio decode task!");
-        // let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
-        // let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
-        // loop {
-        //     match rx.recv() {
-        //         Ok(event) => match event {
-        //             XzEvent::AudioDecodeEvent => {
-        //                 info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
-        //                 let packets = {
-        //                     let mut queue = audio_packet_queue_arc.lock().unwrap();
-        //                     // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
-        //                     // 这完全等同于 C++ 的 std::move
-        //                     std::mem::take(&mut *queue)
-        //                 };
-        //                 info!("开始播放音频数据");
-        //                 // 此时锁已经释放了
-        //                 for packet in packets {
-        //                     // self.protocol.send_audio(&packet).unwrap();
-        //                     decode_opus_audio(
-        //                         codec.clone(),
-        //                         &mut opus_decoder,
-        //                         packet.payload,
-        //                         &mut shared_pcm_buffer,
-        //                     );
-        //                 }
-        //             }
-        //             _ => {
-        //                 info!("Received unhandled event: {:?}", event);
-        //             }
-        //         },
-        //         Err(_) => {
-        //             info!("Event channel closed, exiting event loop");
-        //         }
-        //     }
-        // }
+        let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+        loop {
+            match rx.recv() {
+                Ok(event) => match event {
+                    XzEvent::AudioDecodeEvent => {
+                        info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
+                        let packets = {
+                            let mut queue = audio_packet_queue_arc.lock().unwrap();
+                            // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+                            // 这完全等同于 C++ 的 std::move
+                            std::mem::take(&mut *queue)
+                        };
+                        info!("开始播放音频数据");
+                        // 此时锁已经释放了
+                        for packet in packets {
+                            // self.protocol.send_audio(&packet).unwrap();
+                            decode_opus_audio(
+                                codec.clone(),
+                                &mut opus_decoder,
+                                packet.payload,
+                                &mut shared_pcm_buffer,
+                            );
+                        }
+                    }
+                    _ => {
+                        info!("Received unhandled event: {:?}", event);
+                    }
+                },
+                Err(_) => {
+                    info!("Event channel closed, exiting event loop");
+                }
+            }
+        }
     });
 
     info!("只装箱一次！");
     // 只装箱一次！
-    // let closure_box = Box::new(task_closure);
-    let closure_ptr = Box::into_raw(task_closure);
+    let closure_box = Box::new(task_closure);
+    let closure_ptr = Box::into_raw(closure_box);
 
     info!("try to call xTaskCreatePinnedToCore in the unsafe block");
     unsafe {

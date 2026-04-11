@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::ffi::CStr;
+use std::ffi::{c_void, CStr};
 use std::num::NonZeroU32;
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -15,6 +15,7 @@ use esp_idf_hal::i2s::config::{
 use esp_idf_hal::i2s::I2sTx;
 use esp_idf_hal::task::asynch::Notification;
 use esp_idf_hal::task::block_on;
+use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_hal::{
     delay::{Delay, FreeRtos, BLOCK},
     gpio::{self, AnyIOPin, AnyInputPin, AnyOutputPin, PinDriver},
@@ -46,7 +47,9 @@ use log::{error, info, warn, LevelFilter};
 use xiaoxin_esp32::application::Application;
 use xiaoxin_esp32::audio::codec::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::codec::es8311::Es8311;
+use xiaoxin_esp32::audio::codec::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::common::button;
+use xiaoxin_esp32::utils::ffi::c_task_trampoline;
 use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
@@ -102,6 +105,11 @@ fn run_app() -> Result<()> {
     info!("check my config ...");
     check_my_configs();
 
+    // // 测试 在 x_task_create_pinned_to_core 中解码opus
+    // log::info!("call test_x_task_create_pinned_to_core");
+    // test_x_task_create_pinned_to_core();
+    // log::info!("after test_x_task_create_pinned_to_core");
+
     info!("run app ...");
 
     let app = Application::new();
@@ -112,6 +120,109 @@ fn run_app() -> Result<()> {
         }
     };
     Ok(())
+}
+
+// unsafe extern "C" fn audio_task_trampoline(arg: *mut c_void) {
+//     // 1. 将 void* 转回 Box<dyn FnOnce()>
+//     // 注意：这里的类型必须与你 into_raw 传入的一致
+//     let task_closure = Box::from_raw(arg as *mut Box<dyn FnOnce()>);
+
+//     // 2. 执行闭包
+//     task_closure();
+
+//     // 3. 任务结束，手动删除 (在 ESP32 中，任务函数不能简单退出，必须删除)
+//     esp_idf_sys::vTaskDelete(ptr::null_mut());
+// }
+
+fn test_x_task_create_pinned_to_core() {
+    let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
+        info!("task_closure running !!!");
+        decode_p3_audio();
+    });
+
+    // 只装箱一次！
+    let closure_box = Box::new(task_closure);
+    let closure_ptr = Box::into_raw(closure_box);
+
+    unsafe {
+        esp_idf_sys::xTaskCreatePinnedToCore(
+            Some(c_task_trampoline),
+            b"decode_task\0".as_ptr() as *const u8,
+            16 * 1024,
+            closure_ptr as *mut c_void,
+            5,
+            ptr::null_mut(),
+            0,
+        );
+    }
+
+    // ThreadSpawnConfiguration {
+    //     name: Some(b"decode_task\0"),
+    //     stack_size: 256 * 1024, // 64KB
+    //     priority: 5,
+    //     pin_to_core: Some(0.into()), // 绑定到 Core 0
+    //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+    //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+    //     ..Default::default()
+    // }
+    // .set()
+    // .unwrap();
+    // let _ = thread::spawn(move || {
+    //     info!("task_closure running !!!");
+    //     decode_p3_audio();
+    // });
+    // // Set it back to defaults.
+    // ThreadSpawnConfiguration::default().set().unwrap();
+}
+
+fn decode_p3_audio() {
+    const P3_DATA: &'static [u8] = include_bytes!("../assets/activation.p3");
+
+    info!(
+        "Embedded p3 data size: {} bytes. Starting playback...",
+        P3_DATA.len()
+    );
+
+    const CHUNK_SIZE: usize = 4096;
+
+    info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
+
+    if P3_DATA.len() < 4 {
+        error!("P3 data is too small to be valid.");
+        return;
+    }
+
+    let p3_data_len = P3_DATA.len();
+    info!("P3 data length: {} bytes", p3_data_len);
+
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 1; //# 单声道
+    let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+
+    let mut offset = 0;
+
+    while offset < p3_data_len {
+        let len: [u8; 2] = P3_DATA[offset + 2..offset + 4].try_into().unwrap();
+        let frame_len = u16::from_be_bytes(len) as usize;
+
+        let opus_data = &P3_DATA[(offset + 4)..(offset + 4 + frame_len)];
+        offset += 4 + frame_len;
+        info!("offset {} bytes...", offset);
+
+        // decoder = decoder.decode(sample_rate, channels);
+        let decode_result = opus_decoder.decode(opus_data);
+
+        match decode_result {
+            Ok(pcm_data) => {
+                // info!("pcm_data: {:?}", pcm_data);
+                info!("decode success!!!!!");
+            }
+            Err(e) => {
+                info!("Opus decode error: {:?}", e);
+                return;
+            }
+        }
+    }
 }
 
 fn check_my_configs() {
@@ -146,18 +257,18 @@ fn check_my_configs() {
 
     info!("当前日志级别： {}", esp_idf_sys::CONFIG_LOG_DEFAULT_LEVEL);
 
-    // info!(
-    //     "是否使用自定义分区表 ： {}",
-    //     esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM
-    // );
-    // info!(
-    //     "自定义分区表文件名称： {:?}",
-    //     esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
-    // );
-    // info!(
-    //     "自定义分区表Offset： 0x{:X}",
-    //     esp_idf_sys::CONFIG_PARTITION_TABLE_OFFSET
-    // );
+    info!(
+        "是否使用自定义分区表 ： {}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM
+    );
+    info!(
+        "自定义分区表文件名称： {:?}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_CUSTOM_FILENAME
+    );
+    info!(
+        "自定义分区表Offset： 0x{:X}",
+        esp_idf_sys::CONFIG_PARTITION_TABLE_OFFSET
+    );
 }
 
 fn main1() -> Result<()> {

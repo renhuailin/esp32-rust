@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    ffi::CStr,
+    ffi::{c_void, CStr},
     ptr,
     sync::{
         mpsc::{self, channel, Receiver, Sender},
@@ -40,6 +40,7 @@ use crate::{
         event::XzEvent,
     },
     protocols::{protocol::Protocol, websocket::ws_protocol::WebSocketProtocol},
+    utils::ffi::c_task_trampoline,
     wifi::wifi_driver::{Esp32WifiDriver, WifiStation},
 };
 
@@ -761,27 +762,27 @@ impl Application {
                                     && audio_packet_send_queue_arc.lock().unwrap().len()
                                         < MAX_AUDIO_PACKETS_IN_QUEUE
                                 {
-                                    //在子线程中处理音频解码
-                                    // let mut audio_decode_queue =
-                                    //     self.audio_decode_queue.lock().unwrap();
-                                    // audio_decode_queue.push_back(audio_stream_packet);
-                                    // self.decode_task_sender
-                                    //     .send(XzEvent::AudioDecodeEvent)
-                                    //     .unwrap();
+                                    // 在子线程中处理音频解码
+                                    let mut audio_decode_queue =
+                                        self.audio_decode_queue.lock().unwrap();
+                                    audio_decode_queue.push_back(audio_stream_packet);
+                                    self.decode_task_sender
+                                        .send(XzEvent::AudioDecodeEvent)
+                                        .unwrap();
 
-                                    // 在主线程中处理音频数据包
-                                    match codec_for_opus_player.lock().unwrap().play_opus(
-                                        opus_decoder,
-                                        audio_stream_packet.payload.as_slice(),
-                                        &mut shared_pcm_buffer,
-                                    ) {
-                                        Ok(()) => {
-                                            // info!("codec play_opus ok");
-                                        }
-                                        Err(e) => {
-                                            error!("codec::play_opus error: {:?}", e);
-                                        }
-                                    }
+                                    // // 在主线程中处理音频数据包
+                                    // match codec_for_opus_player.lock().unwrap().play_opus(
+                                    //     opus_decoder,
+                                    //     audio_stream_packet.payload.as_slice(),
+                                    //     &mut shared_pcm_buffer,
+                                    // ) {
+                                    //     Ok(()) => {
+                                    //         // info!("codec play_opus ok");
+                                    //     }
+                                    //     Err(e) => {
+                                    //         error!("codec::play_opus error: {:?}", e);
+                                    //     }
+                                    // }
                                 }
                             }
                         }
@@ -1049,56 +1050,79 @@ impl Application {
         let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
 
         if let Some(rx) = self.decode_task_receiver.take() {
-            ThreadSpawnConfiguration {
-                name: Some(b"decode_task\0"),
-                stack_size: 64 * 1024, // 64KB
-                priority: 5,
-                pin_to_core: Some(0.into()), // 绑定到 Core 0
-                // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-                // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-                ..Default::default()
-            }
-            .set()
-            .unwrap();
+            // ThreadSpawnConfiguration {
+            //     name: Some(b"decode_task\0"),
+            //     stack_size: 256 * 1024, // 64KB
+            //     priority: 5,
+            //     pin_to_core: Some(0.into()), // 绑定到 Core 0
+            //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+            //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+            //     ..Default::default()
+            // }
+            // .set()
+            // .unwrap();
 
-            let _ = thread::spawn(move || {
-                let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
-                let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
-                loop {
-                    match rx.recv() {
-                        Ok(event) => match event {
-                            XzEvent::AudioDecodeEvent => {
-                                info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
-                                let packets = {
-                                    let mut queue = audio_packet_queue_arc.lock().unwrap();
-                                    // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
-                                    // 这完全等同于 C++ 的 std::move
-                                    std::mem::take(&mut *queue)
-                                };
-                                info!("开始播放音频数据");
+            // test_audio_decode_task(rx, audio_packet_queue_arc, codec);
 
-                                // 此时锁已经释放了
-                                for packet in packets {
-                                    // self.protocol.send_audio(&packet).unwrap();
-                                    decode_opus_audio(
-                                        codec.clone(),
-                                        &mut opus_decoder,
-                                        packet.payload,
-                                        &mut shared_pcm_buffer,
-                                    );
-                                }
-                            }
-                            _ => {
-                                info!("Received unhandled event: {:?}", event);
-                            }
-                        },
-                        Err(_) => {
-                            info!("Event channel closed, exiting event loop");
-                        }
-                    }
-                }
-                // info!("application start 函数返回！");
-            });
+            // test_audio_decode_task();
+
+            // info!("take the decode task receiver");
+            //在xtask中解码
+            // let task_closure = Box::new(|| {
+            //     info!("Starting audio decode task!");
+            //     let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+            //     let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+            //     loop {
+            //         match rx.recv() {
+            //             Ok(event) => match event {
+            //                 XzEvent::AudioDecodeEvent => {
+            //                     info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
+            //                     let packets = {
+            //                         let mut queue = audio_packet_queue_arc.lock().unwrap();
+            //                         // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+            //                         // 这完全等同于 C++ 的 std::move
+            //                         std::mem::take(&mut *queue)
+            //                     };
+            //                     info!("开始播放音频数据");
+            //                     // 此时锁已经释放了
+            //                     for packet in packets {
+            //                         // self.protocol.send_audio(&packet).unwrap();
+            //                         decode_opus_audio(
+            //                             codec.clone(),
+            //                             &mut opus_decoder,
+            //                             packet.payload,
+            //                             &mut shared_pcm_buffer,
+            //                         );
+            //                     }
+            //                 }
+            //                 _ => {
+            //                     info!("Received unhandled event: {:?}", event);
+            //                 }
+            //             },
+            //             Err(_) => {
+            //                 info!("Event channel closed, exiting event loop");
+            //             }
+            //         }
+            //     }
+            // });
+
+            // info!("开始两次装箱！");
+            // // 只装箱一次！
+            // let closure_box = Box::new(task_closure);
+            // let closure_ptr = Box::into_raw(closure_box);
+
+            // info!("try to call xTaskCreatePinnedToCore in the unsafe block");
+            // unsafe {
+            //     esp_idf_sys::xTaskCreatePinnedToCore(
+            //         Some(c_task_trampoline),
+            //         b"decode_task\0".as_ptr() as *const u8,
+            //         8 * 1024,
+            //         closure_ptr as *mut c_void,
+            //         5,
+            //         ptr::null_mut(),
+            //         0,
+            //     );
+            // }
 
             // match thread_handle {
             //     Ok(_) => {
@@ -1109,8 +1133,8 @@ impl Application {
             //     }
             // }
 
-            // Set it back to defaults.
-            ThreadSpawnConfiguration::default().set().unwrap();
+            // // Set it back to defaults.
+            // ThreadSpawnConfiguration::default().set().unwrap();
         } else {
             println!("Receiver already taken!");
         }
@@ -1466,5 +1490,73 @@ fn play_opus_audio(
             info!("Opus decode error: {:?}", e);
             return;
         }
+    }
+}
+
+fn test_audio_decode_task(// rx: Receiver<XzEvent>,
+    // audio_packet_queue_arc: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
+    // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+) {
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+    let task_closure = Box::new(|| {
+        info!("Starting audio decode task!");
+        // let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        // let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+        // loop {
+        //     match rx.recv() {
+        //         Ok(event) => match event {
+        //             XzEvent::AudioDecodeEvent => {
+        //                 info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
+        //                 let packets = {
+        //                     let mut queue = audio_packet_queue_arc.lock().unwrap();
+        //                     // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+        //                     // 这完全等同于 C++ 的 std::move
+        //                     std::mem::take(&mut *queue)
+        //                 };
+        //                 info!("开始播放音频数据");
+        //                 // 此时锁已经释放了
+        //                 for packet in packets {
+        //                     // self.protocol.send_audio(&packet).unwrap();
+        //                     decode_opus_audio(
+        //                         codec.clone(),
+        //                         &mut opus_decoder,
+        //                         packet.payload,
+        //                         &mut shared_pcm_buffer,
+        //                     );
+        //                 }
+        //             }
+        //             _ => {
+        //                 info!("Received unhandled event: {:?}", event);
+        //             }
+        //         },
+        //         Err(_) => {
+        //             info!("Event channel closed, exiting event loop");
+        //         }
+        //     }
+        // }
+    });
+
+    info!("只装箱一次！");
+    // 只装箱一次！
+    // let closure_box = Box::new(task_closure);
+    let closure_ptr = Box::into_raw(task_closure);
+
+    info!("try to call xTaskCreatePinnedToCore in the unsafe block");
+    unsafe {
+        let res = esp_idf_sys::xTaskCreatePinnedToCore(
+            Some(c_task_trampoline),
+            b"decode_task\0".as_ptr() as *const u8,
+            8 * 1024,
+            closure_ptr as *mut c_void,
+            5,
+            ptr::null_mut(),
+            0,
+        );
+        // if res != esp_idf_sys::pdPass {
+        //     // 如果创建失败，记得收回内存，否则会泄漏
+        //     let _ = Box::from_raw(closure_ptr);
+        //     error!("Failed to create task");
+        // }
     }
 }

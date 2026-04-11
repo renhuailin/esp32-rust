@@ -162,7 +162,7 @@ impl Protocol for WebSocketProtocol {
 
         let timeout = Duration::from_secs(10);
 
-        let ws_url = "ws://192.168.1.200:8000/xiaozhi/v1/";
+        let ws_url = "ws://192.168.1.145:8000/xiaozhi/v1/";
         // let ws_url = "ws://192.168.1.121:8000/xiaozhi/v1/";
 
         let config = EspWebSocketClientConfig {

@@ -1,14 +1,18 @@
 use std::{ffi::c_void, ptr};
 
+use esp_idf_sys::vTaskDelete;
+
 /// C 任务跳板函数，用于执行 Rust 闭包
+type TaskClosure = Box<dyn FnOnce() + Send + 'static>;
+
 pub unsafe extern "C" fn c_task_trampoline(arg: *mut c_void) {
-    // 1. 将 void* 转回 Box<dyn FnOnce()>
-    // 注意：这里的类型必须与你 into_raw 传入的一致
-    let rust_closure = Box::from_raw(arg as *mut Box<dyn FnOnce()>);
+    // 这里 arg 就是你当初传入的那个 TaskClosure 指针
+    // Box::from_raw 会安全地从这个指针重建 Box
+    let closure = Box::from_raw(arg as *mut TaskClosure);
 
-    // 2. 执行闭包
-    rust_closure();
+    // 执行闭包
+    closure();
 
-    // 3. 任务结束，手动删除 (在 ESP32 中，任务函数不能简单退出，必须删除)
-    esp_idf_sys::vTaskDelete(ptr::null_mut());
+    // 必须删除任务
+    vTaskDelete(ptr::null_mut());
 }

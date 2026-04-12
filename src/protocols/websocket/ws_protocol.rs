@@ -138,7 +138,7 @@ impl Protocol for WebSocketProtocol {
             if client.is_connected() {
                 match client.send(FrameType::Binary(false), &packet.payload) {
                     Ok(_) => {
-                        info!("WebSocketProtocol: Audio packet sent!")
+                        // info!("WebSocketProtocol: Audio packet sent!")
                     }
                     Err(e) => info!("WebSocketProtocol: Send error: {:?}", e),
                 }

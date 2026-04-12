@@ -1,3 +1,5 @@
+use log::info;
+
 use crate::audio::processor::audio_processor::AudioProcessor;
 
 pub struct NoAudioProcessor {
@@ -17,7 +19,7 @@ impl NoAudioProcessor {
 
 impl AudioProcessor for NoAudioProcessor {
     fn initialize(&mut self) {
-        todo!()
+        info!("NoAudioProcessor initialized");
     }
 
     fn feed(&mut self, data: &[i16]) {

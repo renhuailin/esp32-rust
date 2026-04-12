@@ -3,7 +3,7 @@ use std::{
     ffi::{c_void, CStr},
     ptr,
     sync::{
-        mpsc::{self, channel, Receiver, Sender},
+        mpsc::{self, channel, Receiver, Sender, SyncSender},
         Arc, Mutex, MutexGuard,
     },
     thread,
@@ -198,8 +198,15 @@ pub struct Application {
     state: DeviceState,
     protocol: WebSocketProtocol,
     board: Box<dyn Board<WifiDriver = Esp32WifiDriver>>,
+
+    //用于处理内部事件的channel
     inner_sender: Sender<XzEvent>,
     inner_receiver: Receiver<XzEvent>,
+
+    //用于播放pcm的channel
+    inner_pcm_tx: SyncSender<Vec<u8>>,
+    inner_pcm_rx: Option<Receiver<Vec<u8>>>,
+
     aec_mode: AecMode,
     listening_mode: ListeningMode,
 
@@ -209,7 +216,7 @@ pub struct Application {
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待发送的音频队列
     audio_decode_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待解码的音频队列
-    busy_decoding_audio: Arc<Mutex<bool>>,                       //正在解码音频
+    busy_decoding_audio: Arc<Mutex<bool>>, //正在解码音频,TODO:: 在c++代码中，如果正在解码音频，则不播放音频
 
     decode_task_sender: Sender<XzEvent>,
     decode_task_receiver: Option<Receiver<XzEvent>>,
@@ -286,6 +293,9 @@ impl Application {
             OpusAudioDecoder::new(sample_rate, channels).unwrap(),
         ));
 
+        // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长
+        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(10);
+
         let instance = Self {
             state: DeviceState::Idle,
             protocol,
@@ -305,6 +315,8 @@ impl Application {
             shared_audio_state,
             opus_decoder,
             opus_encoder,
+            inner_pcm_tx: pcm_tx,
+            inner_pcm_rx: Some(pcm_rx),
         };
         Ok(instance)
     }
@@ -497,8 +509,6 @@ impl Application {
 
         self.set_device_state(DeviceState::Idle);
 
-        info!("开始处理内部事件 ...");
-        // 处理内部事件
         let audio_state = Arc::clone(&self.shared_audio_state);
 
         let codec_for_opus_player = Arc::clone(&codec_arc);
@@ -506,6 +516,41 @@ impl Application {
         let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
 
         let inner_sender = self.inner_sender.clone();
+
+        let pcm_player_codec = Arc::clone(&codec_for_opus_player);
+
+        //启动音频输出线程
+        info!("启动音频输出线程 start pcm_player_thread ...");
+        if let Some(pcm_rx) = self.inner_pcm_rx.take() {
+            ThreadSpawnConfiguration {
+                name: Some(b"pcm_player_thread\0"),
+                stack_size: 8 * 1024,
+                priority: 10,
+                pin_to_core: Some(1.into()), // 绑定到 Core 1
+
+                // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+                // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+                inherit: false,
+                ..Default::default()
+            }
+            .set()
+            .unwrap();
+
+            let _ = thread::spawn(move || {
+                // let mut opus_decoder = ...;
+                for pcm_packet in pcm_rx {
+                    pcm_player_codec
+                        .lock()
+                        .unwrap()
+                        .output_data(&pcm_packet)
+                        .unwrap();
+                }
+            });
+            ThreadSpawnConfiguration::default().set().unwrap();
+        }
+
+        info!("开始处理内部事件 ...");
+        // 处理内部事件
         loop {
             let opus_decoder = Arc::clone(&self.opus_decoder);
             match self.inner_receiver.recv() {
@@ -736,7 +781,7 @@ impl Application {
 
                             // 此时锁已经释放了
                             for packet in packets {
-                                info!("send audio packet using protocol!");
+                                // info!("send audio packet using protocol!");
                                 self.protocol.send_audio(&packet)?;
                             }
                         }
@@ -763,17 +808,17 @@ impl Application {
                                         < MAX_AUDIO_PACKETS_IN_QUEUE
                                 {
                                     // 在子线程中处理音频解码
-                                    let mut audio_decode_queue =
-                                        self.audio_decode_queue.lock().unwrap();
-                                    audio_decode_queue.push_back(audio_stream_packet);
+                                    // let mut audio_decode_queue =
+                                    //     self.audio_decode_queue.lock().unwrap();
+                                    // audio_decode_queue.push_back(audio_stream_packet);
 
                                     match self
                                         .decode_task_sender
                                         .clone()
-                                        .send(XzEvent::AudioDecodeEvent)
+                                        .send(XzEvent::AudioPacketReceived(audio_stream_packet))
                                     {
                                         Ok(_) => {
-                                            info!("send audio decode event ok");
+                                            // info!("send audio decode event ok");
                                         }
                                         Err(e) => {
                                             error!("send audio decode event error: {:?}", e);
@@ -1051,100 +1096,15 @@ impl Application {
 
     fn start_output_audio(&mut self) {
         // 启动一个线程来decode audio数据
-        let codec = Arc::clone(&self.board.get_audio_codec());
+        // let codec = Arc::clone(&self.board.get_audio_codec());
 
-        let sample_rate = 16000; //# 采样率固定为16000Hz
-        let channels = 2; //# 单声道
-        info!("create opus encoder");
+        // info!("create opus encoder");
 
-        let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
+        // let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
 
+        let pcm_tx = self.inner_pcm_tx.clone();
         if let Some(rx) = self.decode_task_receiver.take() {
-            // ThreadSpawnConfiguration {
-            //     name: Some(b"decode_task\0"),
-            //     stack_size: 256 * 1024, // 64KB
-            //     priority: 5,
-            //     pin_to_core: Some(0.into()), // 绑定到 Core 0
-            //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-            //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-            //     ..Default::default()
-            // }
-            // .set()
-            // .unwrap();
-
-            run_audio_decode_task(rx, audio_packet_queue_arc, codec);
-
-            // test_audio_decode_task();
-
-            // info!("take the decode task receiver");
-            //在xtask中解码
-            // let task_closure = Box::new(|| {
-            //     info!("Starting audio decode task!");
-            //     let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
-            //     let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
-            //     loop {
-            //         match rx.recv() {
-            //             Ok(event) => match event {
-            //                 XzEvent::AudioDecodeEvent => {
-            //                     info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
-            //                     let packets = {
-            //                         let mut queue = audio_packet_queue_arc.lock().unwrap();
-            //                         // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
-            //                         // 这完全等同于 C++ 的 std::move
-            //                         std::mem::take(&mut *queue)
-            //                     };
-            //                     info!("开始播放音频数据");
-            //                     // 此时锁已经释放了
-            //                     for packet in packets {
-            //                         // self.protocol.send_audio(&packet).unwrap();
-            //                         decode_opus_audio(
-            //                             codec.clone(),
-            //                             &mut opus_decoder,
-            //                             packet.payload,
-            //                             &mut shared_pcm_buffer,
-            //                         );
-            //                     }
-            //                 }
-            //                 _ => {
-            //                     info!("Received unhandled event: {:?}", event);
-            //                 }
-            //             },
-            //             Err(_) => {
-            //                 info!("Event channel closed, exiting event loop");
-            //             }
-            //         }
-            //     }
-            // });
-
-            // info!("开始两次装箱！");
-            // // 只装箱一次！
-            // let closure_box = Box::new(task_closure);
-            // let closure_ptr = Box::into_raw(closure_box);
-
-            // info!("try to call xTaskCreatePinnedToCore in the unsafe block");
-            // unsafe {
-            //     esp_idf_sys::xTaskCreatePinnedToCore(
-            //         Some(c_task_trampoline),
-            //         b"decode_task\0".as_ptr() as *const u8,
-            //         8 * 1024,
-            //         closure_ptr as *mut c_void,
-            //         5,
-            //         ptr::null_mut(),
-            //         0,
-            //     );
-            // }
-
-            // match thread_handle {
-            //     Ok(_) => {
-            //         info!("success to spawn the decode thread！");
-            //     }
-            //     Err(_) => {
-            //         error!("failed to spawn the decode thread！");
-            //     }
-            // }
-
-            // // Set it back to defaults.
-            // ThreadSpawnConfiguration::default().set().unwrap();
+            run_audio_decode_task(rx, pcm_tx);
         } else {
             println!("Receiver already taken!");
         }
@@ -1356,13 +1316,82 @@ fn start_audio_input(
     // thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
 }
 
-fn decode_opus_audio(
+fn decode_opus_audio1(
     codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     opus_decoder: &mut OpusAudioDecoder,
     // mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>,
     opus_data: Vec<u8>,
     pcm_buffer: &mut Vec<i16>,
 ) {
+    // let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 双声道
+                      // let channels = 1; //# 双声道
+
+    let decode_result = opus_decoder.decode(&opus_data);
+
+    // let mut decoder = Box::new(OpusAudioDecoder::new(sample_rate, channels).unwrap());
+    // let decode_result = decoder.decode(&opus_data);
+
+    match decode_result {
+        Ok(pcm_data) => {
+            // info!("decode success.");
+            let is_stereo = channels == 2;
+
+            if !is_stereo {
+                info!("is_stereo is false. 不是立体声");
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+                // 1. 清空旧数据，但保留容量（不释放内存）
+                pcm_buffer.clear();
+                pcm_buffer.resize(pcm_mono_data_len * 2, 0);
+                // let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                info!("遍历单声道样本，并复制到立体声缓冲区的左右声道");
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_buffer[i * 2] = sample; // 左声道
+                    pcm_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                // info!("把立体声缓冲区转换为u8字节数组");
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_buffer.as_ptr() as *const u8,
+                        pcm_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+
+                // info!("把u8字节数组写入音频播放器");
+                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+                // play_pcm_audio(i2s_driver, pcm_stereo_bytes);
+            } else {
+                // info!("is_stereo is true. 立体声,直接转为u8字节数组");
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_data.as_ptr() as *const u8,
+                        pcm_data.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+
+                // info!("把u8字节数组写入音频播放器");
+                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+            }
+        }
+        Err(e) => {
+            info!("Opus decode error: {:?}", e);
+            return;
+        }
+    }
+}
+
+fn decode_opus_audio(
+    // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+    opus_decoder: &mut OpusAudioDecoder,
+    // mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>,
+    opus_data: Vec<u8>,
+    pcm_buffer: &mut Vec<i16>,
+) -> anyhow::Result<Vec<u8>> {
     // let sample_rate = 16000; //# 采样率固定为16000Hz
     let channels = 2; //# 双声道
                       // let channels = 1; //# 双声道
@@ -1402,25 +1431,26 @@ fn decode_opus_audio(
                     )
                 };
 
-                info!("把u8字节数组写入音频播放器");
-                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+                Ok(pcm_stereo_bytes.to_vec())
+                // info!("把u8字节数组写入音频播放器");
+                // codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
                 // play_pcm_audio(i2s_driver, pcm_stereo_bytes);
             } else {
-                info!("is_stereo is true. 立体声,直接转为u8字节数组");
+                // info!("is_stereo is true. 立体声,直接转为u8字节数组");
                 let pcm_stereo_bytes: &[u8] = unsafe {
                     core::slice::from_raw_parts(
                         pcm_data.as_ptr() as *const u8,
                         pcm_data.len() * std::mem::size_of::<i16>(),
                     )
                 };
-
-                info!("把u8字节数组写入音频播放器");
-                codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
+                Ok(pcm_stereo_bytes.to_vec())
+                // info!("把u8字节数组写入音频播放器");
+                // codec.lock().unwrap().output_data(pcm_stereo_bytes).unwrap();
             }
         }
         Err(e) => {
             info!("Opus decode error: {:?}", e);
-            return;
+            return Err(e);
         }
     }
 }
@@ -1504,9 +1534,9 @@ fn play_opus_audio(
 }
 
 fn run_audio_decode_task(
-    rx: Receiver<XzEvent>,
-    audio_packet_queue_arc: Arc<Mutex<VecDeque<AudioStreamPacket>>>,
-    codec: Arc<Mutex<dyn AudioCodec + 'static>>,
+    xz_event_rx: Receiver<XzEvent>,
+    pcm_sender: SyncSender<Vec<u8>>,
+    // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
 ) {
     let sample_rate = 16000; //# 采样率固定为16000Hz
     let channels = 2; //# 单声道
@@ -1516,26 +1546,26 @@ fn run_audio_decode_task(
         let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
         let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
         loop {
-            match rx.recv() {
+            match xz_event_rx.recv() {
                 Ok(event) => match event {
-                    XzEvent::AudioDecodeEvent => {
-                        info!("Received AudioDecodeEvent，开始从队列中取出音频数据");
-                        let packets = {
-                            let mut queue = audio_packet_queue_arc.lock().unwrap();
-                            // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
-                            // 这完全等同于 C++ 的 std::move
-                            std::mem::take(&mut *queue)
-                        };
-                        info!("开始播放音频数据");
-                        // 此时锁已经释放了
-                        for packet in packets {
-                            // self.protocol.send_audio(&packet).unwrap();
-                            decode_opus_audio(
-                                codec.clone(),
-                                &mut opus_decoder,
-                                packet.payload,
-                                &mut shared_pcm_buffer,
-                            );
+                    XzEvent::AudioPacketReceived(audio_packet) => {
+                        match decode_opus_audio(
+                            // codec.clone(),
+                            &mut opus_decoder,
+                            audio_packet.payload,
+                            &mut shared_pcm_buffer,
+                        ) {
+                            Ok(pcm_data) => match pcm_sender.send(pcm_data) {
+                                Ok(_) => {
+                                    // info!("Send pcm data success.");
+                                }
+                                Err(e) => {
+                                    error!("Send decoded opus data(pcm data) error: {:?}", e);
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to decode audio: {}", e);
+                            }
                         }
                     }
                     _ => {
@@ -1559,11 +1589,11 @@ fn run_audio_decode_task(
         let res = esp_idf_sys::xTaskCreatePinnedToCore(
             Some(c_task_trampoline),
             b"decode_task\0".as_ptr() as *const u8,
-            8 * 1024,
+            16 * 1024,
             closure_ptr as *mut c_void,
             5,
             ptr::null_mut(),
-            0,
+            1,
         );
         // if res != esp_idf_sys::pdPass {
         //     // 如果创建失败，记得收回内存，否则会泄漏

@@ -59,4 +59,6 @@ pub enum XzEvent {
     ProtocolNetworkError(String),
     AudioDecodeEvent,
     AudioTestEvent(Vec<i16>),
+    TTSStop,
+    TTSStart,
 }

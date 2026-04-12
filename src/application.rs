@@ -741,6 +741,11 @@ impl Application {
                                                         "处理文本消息结束: {} 当前状态: {:?}",
                                                         text, self.state
                                                     );
+
+                                                    self.decode_task_sender
+                                                        .send(XzEvent::TTSStop)
+                                                        .unwrap();
+
                                                     // TODO:: 看一下 background_task_ 在我们这里怎么实现，他的作用应该是等后台任务完成。
                                                     // background_task_->WaitForCompletion();
                                                     if self.state == DeviceState::Speaking {
@@ -771,7 +776,7 @@ impl Application {
                             // let message: serde_json::Value = serde_json::from_str(&text).unwrap();
                         }
                         XzEvent::SendAudioEvent => {
-                            info!("XzEvent::SendAudioEvent");
+                            // info!("XzEvent::SendAudioEvent");
                             let packets = {
                                 let mut queue = audio_packet_send_queue_arc.lock().unwrap();
                                 // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
@@ -1095,13 +1100,6 @@ impl Application {
     }
 
     fn start_output_audio(&mut self) {
-        // 启动一个线程来decode audio数据
-        // let codec = Arc::clone(&self.board.get_audio_codec());
-
-        // info!("create opus encoder");
-
-        // let audio_packet_queue_arc = Arc::clone(&self.audio_decode_queue);
-
         let pcm_tx = self.inner_pcm_tx.clone();
         if let Some(rx) = self.decode_task_receiver.take() {
             run_audio_decode_task(rx, pcm_tx);
@@ -1545,6 +1543,10 @@ fn run_audio_decode_task(
         info!("Starting audio decode task!");
         let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
         let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
+
+        let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
+        let mut cached_packet_count = 0;
+        // let mut tts_start = true;
         loop {
             match xz_event_rx.recv() {
                 Ok(event) => match event {
@@ -1555,16 +1557,42 @@ fn run_audio_decode_task(
                             audio_packet.payload,
                             &mut shared_pcm_buffer,
                         ) {
-                            Ok(pcm_data) => match pcm_sender.send(pcm_data) {
-                                Ok(_) => {
-                                    // info!("Send pcm data success.");
+                            Ok(mut pcm_data) => {
+                                pcm_buffer.append(&mut pcm_data);
+                                if cached_packet_count < 10 {
+                                    cached_packet_count += 1;
+                                    continue;
+                                } else {
+                                    cached_packet_count = 0;
                                 }
-                                Err(e) => {
-                                    error!("Send decoded opus data(pcm data) error: {:?}", e);
+                                let cached_pcm = pcm_buffer.clone();
+                                match pcm_sender.send(cached_pcm) {
+                                    Ok(_) => {
+                                        pcm_buffer.clear();
+                                        // info!("Send pcm data success.");
+                                    }
+                                    Err(e) => {
+                                        error!("Send decoded opus data(pcm data) error: {:?}", e);
+                                    }
                                 }
-                            },
+                            }
                             Err(e) => {
                                 error!("Failed to decode audio: {}", e);
+                            }
+                        }
+                    }
+                    XzEvent::TTSStop => {
+                        //把缓存里剩下的的PCM数据发送出去
+                        let cached_pcm = pcm_buffer.clone();
+                        match pcm_sender.send(cached_pcm) {
+                            Ok(_) => {
+                                cached_packet_count = 0;
+                                // tts_start = true;
+                                pcm_buffer.clear();
+                                // info!("Send pcm data success.");
+                            }
+                            Err(e) => {
+                                error!("Send decoded opus data(pcm data) error: {:?}", e);
                             }
                         }
                     }

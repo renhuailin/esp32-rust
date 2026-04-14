@@ -31,7 +31,10 @@ use crate::{
             opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
             AudioStreamPacket, MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
-        processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
+        processor::{
+            afe_audio_processor::AfeAudioProcessor, audio_processor::AudioProcessor,
+            no_audio_processor::NoAudioProcessor,
+        },
     },
     boards::{board::Board, jianglian_s3cam_board},
     common::{
@@ -269,11 +272,11 @@ impl Application {
         ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        // let audio_processor = Arc::new(Mutex::new(
-        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        // ));
+        let audio_processor = Arc::new(Mutex::new(
+            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        ));
 
-        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -1298,7 +1301,7 @@ fn start_audio_input(
 
             // let duration = start.elapsed();
             // info!("数据转换 耗时: {:?}", duration);
-            // info!("application: feed data to audio processor");
+            info!("application: feed data to audio processor");
 
             // // 3. 再次获取锁进行 feed
             // // 此时 codec 的锁已经释放了，避免交叉死锁
@@ -1608,7 +1611,7 @@ fn run_audio_decode_task(
     });
 
     info!("只装箱一次！");
-    // 只装箱一次！
+
     let closure_box = Box::new(task_closure);
     let closure_ptr = Box::into_raw(closure_box);
 

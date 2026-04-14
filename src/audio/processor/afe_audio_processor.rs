@@ -1,6 +1,6 @@
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
+use std::{ptr, thread};
 
 use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_sys::es32_component_esp_sr::{
@@ -15,6 +15,7 @@ use esp_idf_sys::ESP_FAIL;
 use log::{error, info};
 
 use crate::audio::{codec::audio_codec::AudioCodec, processor::audio_processor::AudioProcessor};
+use crate::utils::ffi::c_task_trampoline;
 
 #[derive(Clone, Copy)]
 struct SendPtr<T>(*mut T);
@@ -314,19 +315,20 @@ impl AfeAudioProcessor {
         //     }
         // }
 
-        // 启动一个线程来读取音频数据
-        ThreadSpawnConfiguration {
-            name: Some(b"afe_task\0"),
-            stack_size: 1024 * 1024,
-            priority: 5,
-            pin_to_core: Some(1.into()), // 绑定到 Core 1
-            // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-            // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-            ..Default::default()
-        }
-        .set()
-        .unwrap();
-        let _ = thread::spawn(move || {
+        // // 启动一个线程来读取音频数据
+        // ThreadSpawnConfiguration {
+        //     name: Some(b"afe_task\0"),
+        //     stack_size: 4 * 1204,
+        //     priority: 5,
+        //     pin_to_core: Some(1.into()), // 绑定到 Core 1
+        //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+        //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+        //     ..Default::default()
+        // }
+        // .set()
+        // .unwrap();
+
+        let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
             let afe_iface = afe_iface_wrapper.as_ptr() as *const esp_afe_sr_iface_t;
             let afe_data = afe_data_wrapper.as_ptr();
 
@@ -403,7 +405,29 @@ impl AfeAudioProcessor {
                 }
             }
         });
-        ThreadSpawnConfiguration::default().set().unwrap();
+
+        let closure_box = Box::new(task_closure);
+        let closure_ptr = Box::into_raw(closure_box);
+
+        info!("try to call xTaskCreatePinnedToCore in the unsafe block");
+        unsafe {
+            let res = esp_idf_sys::xTaskCreatePinnedToCore(
+                Some(c_task_trampoline),
+                b"audio_processor\0".as_ptr() as *const u8,
+                16 * 1024,
+                closure_ptr as *mut c_void,
+                3,
+                ptr::null_mut(),
+                1,
+            );
+            // if res != esp_idf_sys::pdPass {
+            //     // 如果创建失败，记得收回内存，否则会泄漏
+            //     let _ = Box::from_raw(closure_ptr);
+            //     error!("Failed to create task");
+            // }
+        }
+
+        // ThreadSpawnConfiguration::default().set().unwrap();
     }
 }
 
@@ -429,7 +453,12 @@ impl AudioProcessor for AfeAudioProcessor {
 
         unsafe {
             // 检查函数指针并调用
+            info!(
+                "feed audio data, data_ptr: {:?}, data: {:?}",
+                data_ptr, data
+            );
             if let Some(feed_func) = (*iface_ptr).feed {
+                info!("feed_func: {:?}", feed_func);
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
                 if ret != 0 {
                     // 只在错误时输出日志
@@ -450,13 +479,13 @@ impl AudioProcessor for AfeAudioProcessor {
     }
 
     fn stop(&mut self) {
-        info!("stop audio processor!!!!!!");
-        let mut state = self.state.lock().unwrap();
-        state.is_running = false;
-        // 释放锁后，线程会在下一次循环检查时暂停
-        unsafe {
-            ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
-        }
+        // info!("stop audio processor!!!!!!");
+        // let mut state = self.state.lock().unwrap();
+        // state.is_running = false;
+        // // 释放锁后，线程会在下一次循环检查时暂停
+        // unsafe {
+        //     ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
+        // }
     }
 
     fn is_running(&self) -> bool {

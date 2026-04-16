@@ -39,11 +39,11 @@ where
             is_open: false,
             enabled: false,
             clock_off_status: 0,
-            input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
-            // input_mics: ES7210_INPUT_MIC1
-            //     | ES7210_INPUT_MIC2
-            //     | ES7210_INPUT_MIC3
-            //     | ES7210_INPUT_MIC4,
+            // input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
+            input_mics: ES7210_INPUT_MIC1
+                | ES7210_INPUT_MIC2
+                | ES7210_INPUT_MIC3
+                | ES7210_INPUT_MIC4,
         }
     }
 

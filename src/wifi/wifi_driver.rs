@@ -179,6 +179,9 @@ impl WifiStation for Esp32WifiDriver {
 
         let mut wifi = BlockingWifi::wrap(&mut *esp_wifi, self.sysloop.clone())?;
 
+        info!("Scanning...");
+
+        wifi.start()?;
         let ap_infos = wifi.scan()?;
         let ap_names = ap_infos
             .into_iter()

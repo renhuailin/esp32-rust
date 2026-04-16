@@ -1,5 +1,7 @@
 use anyhow::{Ok, Result};
 use chrono::{DateTime, Utc};
+use esp_idf_svc::ping::Info;
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 
 use crate::setting::nvs_setting::NvsSetting;
@@ -20,11 +22,19 @@ impl SsidMananger {
         Self {}
     }
     pub fn get_ssid_list(&self) -> Result<Vec<SsidItem>> {
-        let nvs = NvsSetting::new("wifi")?;
+        let nvs = match NvsSetting::new("wifi") {
+            std::result::Result::Ok(nvs) => nvs,
+            Err(e) => {
+                error!("failed to create nvs setting: {:?}", e);
+                return Err(e.into());
+            }
+        };
 
         let mut ssid_items = Vec::new();
 
+        info!("try to get wifi_setting_json");
         let wifi_setting_json = nvs.get_string(WIFI_SETTING_KEY);
+        info!("wifi_setting_json: {:?}", wifi_setting_json);
 
         if let Some(json_string) = wifi_setting_json {
             match serde_json::from_str::<Vec<SsidItem>>(&json_string) {

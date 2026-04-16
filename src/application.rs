@@ -340,9 +340,17 @@ impl Application {
         // let codec = self.board.get_audio_codec();
         codec_arc.lock().unwrap().start();
 
+        info!("starting  network");
         /* Wait for the network to be ready */
-        self.board.start_network()?;
-        info!("network started!");
+        match self.board.start_network() {
+            Ok(_) => {
+                info!("network started!");
+            }
+            Err(err) => {
+                error!("network start failed: {:?}", err);
+                return Err(err);
+            }
+        }
 
         // self.protocol.set_on_close_handler(|| {
         //     // self.board.set_save_power_mode(true);

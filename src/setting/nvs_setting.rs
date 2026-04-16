@@ -1,14 +1,25 @@
-use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsDefault};
+use esp_idf_svc::nvs::{
+    EspCustomNvsPartition, EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsCustom, NvsDefault,
+};
+use log::{error, info};
 
 ///https://docs.esp-rs.org/esp-idf-svc/esp_idf_svc/nvs/struct.EspNvs.html
 pub struct NvsSetting {
-    nvs: EspNvs<NvsDefault>,
+    nvs: EspNvs<NvsCustom>,
 }
 
 impl NvsSetting {
     pub fn new(namespace: &str) -> anyhow::Result<Self> {
-        let nvs_default_partition: EspNvsPartition<NvsDefault> = EspDefaultNvsPartition::take()?;
-        let nvs: EspNvs<NvsDefault> = EspNvs::new(nvs_default_partition, namespace, true)?;
+        let nvs_default_partition: EspNvsPartition<NvsCustom> =
+            match EspCustomNvsPartition::take("nvs") {
+                Ok(nvs) => nvs,
+                Err(e) => {
+                    error!("failed to take the nvs_default_partition");
+                    return Err(e.into());
+                }
+            };
+        info!("take the nvs_default_partition");
+        let nvs: EspNvs<NvsCustom> = EspNvs::new(nvs_default_partition, namespace, true)?;
         Ok(Self { nvs })
     }
 

@@ -273,9 +273,12 @@ impl Board for JiangLianS3CamBoard {
 
         // scanning available access points
         let available_ap_names = self.wifi_driver.get_available_access_points()?;
+        info!("Available AP names: {:?}", available_ap_names);
 
         // get saved ssid list
         let ssid_list = ssid_manager.get_ssid_list()?;
+        info!("Saved SSID list: {:?}", ssid_list);
+
         let saved_ap_names = ssid_list
             .iter()
             .map(|ssid| ssid.ssid.clone())
@@ -290,6 +293,8 @@ impl Board for JiangLianS3CamBoard {
             .intersection(&set2)
             .copied() // 把 &&i32 解引用成 i32 (也就是克隆一层引用指向的值)
             .collect();
+
+        info!("Intersection: {:?}", intersection);
 
         for ssid_item in ssid_list {
             if intersection.contains(&&ssid_item.ssid) {
@@ -338,6 +343,7 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn start_network(&mut self) -> Result<()> {
+        info!("Start network");
         let wifi_connected = self.start_wifi_station()?;
         if !wifi_connected {
             self.wifi_config_mode = true;

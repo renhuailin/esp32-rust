@@ -113,10 +113,11 @@ fn run_app() -> Result<()> {
     info!("run app ...");
 
     let app = Application::new();
+    info!("create new  app ...");
     match app {
         Ok(mut application) => application.start()?,
         Err(error) => {
-            error!("{}", error);
+            error!("application start error:  {}", error);
         }
     };
     Ok(())

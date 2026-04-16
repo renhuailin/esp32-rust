@@ -13,15 +13,15 @@ use log::{debug, error, info};
 
 use crate::audio::codec::AudioStreamPacket;
 use crate::common::enums::{AbortReason, ListeningMode};
-use crate::common::event::{WsEvent, XzEvent};
+use crate::common::event::{AppEvent, WsEvent};
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
 
 pub struct WebSocketProtocol {
     client: Option<Box<EspWebSocketClient<'static>>>,
-    internal_sender: Sender<XzEvent>,
-    internal_receiver: Option<Receiver<XzEvent>>,
-    external_sender: Sender<XzEvent>,
+    internal_sender: Sender<AppEvent>,
+    internal_receiver: Option<Receiver<AppEvent>>,
+    external_sender: Sender<AppEvent>,
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
     is_connected: bool,
@@ -44,8 +44,8 @@ impl WebSocketProtocol {
     ///
     /// # 返回值
     /// 返回初始化后的 WebSocketProtocol 实例
-    pub fn new(device_id: &str, sender: Sender<XzEvent>) -> Self {
-        let (inner_sender, inner_receiver): (Sender<XzEvent>, Receiver<XzEvent>) = channel();
+    pub fn new(device_id: &str, sender: Sender<AppEvent>) -> Self {
+        let (inner_sender, inner_receiver): (Sender<AppEvent>, Receiver<AppEvent>) = channel();
         Self {
             client: None,
             // sender,
@@ -195,7 +195,7 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Connected => {
                             // info!("Websocket connected");
-                            match inner_sender.send(XzEvent::WebSocketConnected) {
+                            match inner_sender.send(AppEvent::WebSocketConnected) {
                                 Ok(_) => {}
                                 Err(e) => {
                                     error!("Error sending audio data: {:?}", e);
@@ -204,16 +204,16 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Disconnected => {
                             // info!("Websocket disconnected");
-                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
+                            external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Close(reason) => {
                             info!("Websocket close, reason: {reason:?}");
-                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
+                            external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Closed => {
-                            external_sender.send(XzEvent::WebSocketClosed).unwrap();
+                            external_sender.send(AppEvent::WebSocketClosed).unwrap();
                             info!("Websocket closed");
                         }
 
@@ -226,7 +226,7 @@ impl Protocol for WebSocketProtocol {
                                 if let Some(message_type) = message["type"].as_str() {
                                     if message_type == "hello" {
                                         inner_sender
-                                            .send(XzEvent::ServerHelloMessageReceived(
+                                            .send(AppEvent::ServerHelloMessageReceived(
                                                 text.to_string(),
                                             ))
                                             .unwrap();
@@ -235,7 +235,7 @@ impl Protocol for WebSocketProtocol {
                                 }
                             } else {
                                 external_sender
-                                    .send(XzEvent::WebsocketTextMessageReceived(text.to_string()))
+                                    .send(AppEvent::WebsocketTextMessageReceived(text.to_string()))
                                     .unwrap();
                             }
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
@@ -252,7 +252,7 @@ impl Protocol for WebSocketProtocol {
                             };
 
                             external_sender
-                                .send(XzEvent::AudioPacketReceived(packet))
+                                .send(AppEvent::AudioPacketReceived(packet))
                                 .unwrap();
                         }
                         WebSocketEventType::Ping => {
@@ -274,7 +274,7 @@ impl Protocol for WebSocketProtocol {
                 match rx.recv() {
                     Ok(event) => {
                         match event {
-                            XzEvent::WebSocketConnected => {
+                            AppEvent::WebSocketConnected => {
                                 // debug!("Connected,try to send hello message");
                                 // send client hello message
                                 if let Some(client) = &mut self.client {
@@ -300,7 +300,7 @@ impl Protocol for WebSocketProtocol {
                                 }
                                 // break;
                             }
-                            XzEvent::ServerHelloMessageReceived(_) => {
+                            AppEvent::ServerHelloMessageReceived(_) => {
                                 // info!("WebSocketProtocol: Server hello message received. {}", text);
                                 // self.parse_server_hello_message(text);
                                 break;
@@ -439,8 +439,8 @@ impl Drop for WebSocketProtocol {
 
 fn handle_event(
     event: &Result<WebSocketEvent, EspIOError>,
-    internal_sender: Sender<XzEvent>,
-    sender: Sender<XzEvent>,
+    internal_sender: Sender<AppEvent>,
+    sender: Sender<AppEvent>,
 ) {
     if let Ok(event) = event {
         match event.event_type {
@@ -449,7 +449,7 @@ fn handle_event(
             }
             WebSocketEventType::Connected => {
                 info!("Websocket connected");
-                internal_sender.send(XzEvent::WebSocketConnected).unwrap();
+                internal_sender.send(AppEvent::WebSocketConnected).unwrap();
                 // tx.send(ExampleEvent::Connected).ok();
                 // sys_loop
                 //     .post::<CustomEvent>(&CustomEvent::WebSocketConnected, delay::BLOCK)
@@ -471,7 +471,7 @@ fn handle_event(
                 // info!("Websocket received a text message");
                 info!("Websocket received a text message, text: {text}");
                 sender
-                    .send(XzEvent::WebsocketTextMessageReceived(text.to_string()))
+                    .send(AppEvent::WebsocketTextMessageReceived(text.to_string()))
                     .unwrap();
                 // let hello: serde_json::Value = serde_json::from_str(text).unwrap();
                 // info!("parse json success");
@@ -486,7 +486,7 @@ fn handle_event(
                     payload: binary.to_vec(),
                 };
 
-                sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
+                sender.send(AppEvent::AudioPacketReceived(packet)).unwrap();
             }
             WebSocketEventType::Ping => {
                 info!("Websocket ping");

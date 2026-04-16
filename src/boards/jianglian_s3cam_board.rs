@@ -25,13 +25,8 @@ use crate::{
     audio::codec::{audio_codec::AudioCodec, xiaozhi_audio_codec::XiaozhiAudioCodec},
     axp173::{Axp173, Ldo},
     boards::board::Board,
-    common::{
-        event::XzEvent,
-        gpio_button::Button,
-        httpd_server::{create_server, start_http_server},
-    },
+    common::{application_context::ApplicationContext, gpio_button::Button},
     display::{lcd::st7789::LcdSt7789, Display},
-    protocols::websocket::ws_protocol::WebSocketProtocol,
     wifi::{
         ssid_manager::SsidMananger,
         wifi_driver::{Esp32WifiDriver, WifiAP, WifiStation},
@@ -49,10 +44,12 @@ pub struct JiangLianS3CamBoard {
 
     on_touch_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
     on_volume_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
+    wifi_config_mode: bool,
+    app_context: ApplicationContext,
 }
 
 impl JiangLianS3CamBoard {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new(app_context: ApplicationContext) -> Result<Self, Error> {
         let peripherals: Peripherals = Peripherals::take().unwrap();
         let pins = peripherals.pins;
 
@@ -131,8 +128,6 @@ impl JiangLianS3CamBoard {
         let mclk = pins.gpio41.into();
         let ws = pins.gpio40;
 
-        // let std_config = StdConfig::philips(24000, DataBitWidth::Bits16);
-
         // i2s_config
         let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
             peripherals.i2s0,
@@ -156,13 +151,13 @@ impl JiangLianS3CamBoard {
             volume_button,
             on_touch_button_clicked: None,
             on_volume_button_clicked: None,
+            wifi_config_mode: false,
+            app_context,
         })
     }
 
     pub fn init(&mut self) -> Result<()> {
-        self.display.show_qrcode("https://www.qq.com");
-
-        self.init_wifi()?;
+        // self.init_wifi()?;
         info!("Init power management");
         self.init_power_management()?;
         info!("Init buttons");
@@ -321,6 +316,13 @@ impl Board for JiangLianS3CamBoard {
                         "成功启动http server,请访问 http://{}",
                         ip_info.ip.to_string()
                     );
+
+                    let url = format!("http://{}", ip_info.ip.to_string());
+
+                    self.display.show_qrcode(&url);
+                    self.app_context.app_event_sender.send(
+                        crate::common::event::AppEvent::PlayAudioAlert("wificonfig".to_string()),
+                    )?;
                 }
                 Err(e) => {
                     error!("启动http server 出错：{:?}", e);
@@ -333,5 +335,15 @@ impl Board for JiangLianS3CamBoard {
         }
 
         Ok(true)
+    }
+
+    fn start_network(&mut self) -> Result<()> {
+        let wifi_connected = self.start_wifi_station()?;
+        if !wifi_connected {
+            self.wifi_config_mode = true;
+            self.start_wifi_ap()?;
+        }
+
+        Ok(())
     }
 }

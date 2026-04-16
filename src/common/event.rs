@@ -44,7 +44,7 @@ impl EspEventDeserializer for WsEvent {
 }
 
 #[derive(Clone, Debug)]
-pub enum XzEvent {
+pub enum AppEvent {
     BootButtonClicked,
     VolumeButtonClicked,
     OpenAudioChannel,
@@ -61,4 +61,5 @@ pub enum XzEvent {
     AudioTestEvent(Vec<i16>),
     TTSStop,
     TTSStart,
+    PlayAudioAlert(String), //播放内置的提示音频
 }

@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CString};
+use std::ffi::{c_void, CStr, CString};
 use std::sync::{Arc, Condvar, Mutex};
 use std::{ptr, thread};
 
@@ -84,8 +84,8 @@ impl AfeAudioProcessor {
             input_format.push('R');
         }
 
-        // info!("AFE Input Format: {}", input_format); // 比如 "MR"
-        // info!("Codec Channels: {}", codec.lock().unwrap().input_channels());
+        info!("AFE Input Format: {}", input_format); // 比如 "MR"
+        info!("Codec Channels: {}", codec.lock().unwrap().input_channels());
 
         // srmodel_list_t *models = esp_srmodel_init("model");
         // char *ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
@@ -121,7 +121,18 @@ impl AfeAudioProcessor {
         (unsafe { *afe_config }).vad_min_noise_ms = 100;
 
         if vad_model_name != std::ptr::null_mut() {
-            (unsafe { *afe_config }).vad_model_name = vad_model_name;
+            unsafe {
+                (*afe_config).vad_model_name = vad_model_name;
+
+                let c_str = CStr::from_ptr(vad_model_name as *const u8);
+
+                // 2. 将 &CStr 转换为 Rust 的 &str
+                // to_string_lossy() 会处理掉无效的 UTF-8 字符，防止程序崩溃
+                let rust_str = c_str.to_string_lossy();
+                info!("vad_model_name is : {}", rust_str);
+            }
+        } else {
+            info!("vad_model_name is null");
         }
 
         // if (ns_model_name != nullptr)
@@ -139,6 +150,7 @@ impl AfeAudioProcessor {
             (unsafe { *afe_config }).ns_model_name = ns_model_name;
             (unsafe { *afe_config }).afe_ns_mode = afe_ns_mode_t_AFE_NS_MODE_NET;
         } else {
+            info!("ns_model_name is null");
             (unsafe { *afe_config }).ns_init = false;
         }
 
@@ -341,22 +353,27 @@ impl AfeAudioProcessor {
                 );
 
                 loop {
+                    info!("in task closure! 阶段 1: 等待运行信号 ");
                     // --- 阶段 1: 等待运行信号 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
+                    info!("while !state_guard.is_running ");
                     while !state_guard.is_running {
                         // wait 会释放锁并挂起线程，被 notify 唤醒后会重新获取锁
                         state_guard = cond_clone.wait(state_guard).unwrap();
                     }
 
+                    info!("阶段 2: 释放锁，执行耗时操作");
                     // --- 阶段 2: 释放锁，执行耗时操作 ---
                     // 必须释放锁，否则主线程调用 stop() 时会死锁
                     drop(state_guard);
 
+                    info!("调用 C 函数获取音频数据");
                     // 调用 C 函数获取音频数据
                     // portMAX_DELAY 在 Rust 中对应 u32::MAX
                     let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
 
+                    info!("阶段 3: 重新获取锁处理结果");
                     // --- 阶段 3: 重新获取锁处理结果 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
@@ -372,6 +389,7 @@ impl AfeAudioProcessor {
                         continue;
                     }
 
+                    info!("阶段 4: 处理回调");
                     // --- 阶段 4: 处理回调 ---
 
                     // VAD (语音活动检测) 状态变化
@@ -386,6 +404,7 @@ impl AfeAudioProcessor {
                         vad_event = Some(false); // 需要触发"停止说话"
                     }
 
+                    info!("已经取到 vad_event");
                     // 2. 如果有事件发生，再获取回调函数进行调用
                     // 此时上面的逻辑已经结束，state_guard 的借用已经释放，可以再次借用
                     if let Some(is_speaking) = vad_event {
@@ -394,6 +413,8 @@ impl AfeAudioProcessor {
                             vad_cb(is_speaking);
                         }
                     }
+
+                    info!("输出音频数据");
                     // 输出音频数据
                     if let Some(ref mut out_cb) = state_guard.output_callback {
                         let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();

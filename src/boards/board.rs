@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::Error;
+use anyhow::{Error, Result};
 
 use crate::{audio::codec::audio_codec::AudioCodec, wifi::wifi_driver::WifiStation};
 
@@ -23,6 +23,8 @@ pub trait Board {
     fn start_wifi_station(&mut self) -> Result<bool, Error>;
 
     fn start_wifi_ap(&mut self) -> Result<bool, Error>;
+
+    fn start_network(&mut self) -> Result<()>;
 
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;

@@ -7,13 +7,13 @@ use esp_idf_svc::{
     hal::peripheral,
     http::server::EspHttpServer,
     ipv4::IpInfo,
-    nvs::EspNvsPartition,
+    nvs::{EspCustomNvsPartition, EspNvsPartition, NvsCustom},
     wifi::{
         AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration,
         EspWifi, WifiDeviceId,
     },
 };
-use log::info;
+use log::{error, info};
 
 use crate::common::httpd_server::{create_server, start_http_server};
 
@@ -71,8 +71,7 @@ impl Esp32WifiDriver {
         modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
         sysloop: EspSystemEventLoop,
     ) -> Result<Self> {
-        let nvs = EspNvsPartition::<esp_idf_svc::nvs::NvsDefault>::take()?;
-        let esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
+        let esp_wifi = EspWifi::new(modem, sysloop.clone(), None)?;
         Ok(Self {
             wifi: Arc::new(Mutex::new(esp_wifi)),
             sysloop: sysloop,

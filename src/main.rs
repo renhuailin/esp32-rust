@@ -198,7 +198,9 @@ fn decode_p3_audio() {
 
     let sample_rate = 16000; //# 采样率固定为16000Hz
     let channels = 1; //# 单声道
-    let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+    let opus_frame_duration = 60; // Opus帧持续时间20ms
+    let mut opus_decoder =
+        OpusAudioDecoder::new(sample_rate, channels, opus_frame_duration).unwrap();
 
     let mut offset = 0;
 
@@ -670,6 +672,9 @@ fn main1() -> Result<()> {
 
     // once_timer2.after(Duration::from_secs(2)).unwrap();
 
+    // // 尝试播放P3音频 ，下面是已经成功的代码。
+    play_p3_audio(i2s_clone_for_player.lock().unwrap());
+    // play_pcm_asset(i2s_clone_for_player.lock().unwrap());
     let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
     let mut volume_button = button::Button::new(pins.gpio47).unwrap();
 
@@ -719,7 +724,111 @@ fn main1() -> Result<()> {
     Ok(())
 }
 
-fn play_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
+fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
+    const P3_DATA: &'static [u8] = include_bytes!("../assets/activation.p3");
+
+    info!(
+        "Embedded p3 data size: {} bytes. Starting playback...",
+        P3_DATA.len()
+    );
+
+    const CHUNK_SIZE: usize = 4096;
+
+    info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
+
+    if P3_DATA.len() < 4 {
+        error!("P3 data is too small to be valid.");
+        return;
+    }
+
+    let p3_data_len = P3_DATA.len();
+    info!("P3 data length: {} bytes", p3_data_len);
+
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 1; //# 单声道
+    let opus_frame_duration = 60;
+    let mut opus_decoder =
+        OpusAudioDecoder::new(sample_rate, channels, opus_frame_duration).unwrap();
+
+    let mut offset = 0;
+
+    while offset < p3_data_len {
+        let len: [u8; 2] = P3_DATA[offset + 2..offset + 4].try_into().unwrap();
+        let frame_len = u16::from_be_bytes(len) as usize;
+
+        let opus_data = &P3_DATA[(offset + 4)..(offset + 4 + frame_len)];
+        offset += 4 + frame_len;
+        info!("offset {} bytes...", offset);
+
+        // decoder = decoder.decode(sample_rate, channels);
+        let decode_result = opus_decoder.decode(opus_data);
+
+        match decode_result {
+            Ok(pcm_data) => {
+                //因为 p3文件是单声道的，而我们的 I2S 配置是双声道的，所以需要将单声道数据转换成双声道数据。
+                let pcm_mono_data_len = pcm_data.len();
+
+                let mut pcm_stereo_buffer = vec![0i16; pcm_mono_data_len * 2];
+
+                // 2. 遍历单声道样本，并复制到立体声缓冲区的左右声道
+                for i in 0..pcm_mono_data_len {
+                    let sample = pcm_data[i];
+                    pcm_stereo_buffer[i * 2] = sample; // 左声道
+                    pcm_stereo_buffer[i * 2 + 1] = sample; // 右声道
+                }
+
+                let pcm_stereo_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        pcm_stereo_buffer.as_ptr() as *const u8,
+                        pcm_stereo_buffer.len() * std::mem::size_of::<i16>(),
+                    )
+                };
+
+                // 如果p3是双声道的，或者使用了单声道的 I2S 配置，我们就可以直接使用 decode 后的音频数据。
+                // // 1. 首先，获取一个指向有效数据的切片
+                // let pcm_slice: &[i16] = &pcm_data;
+
+                // // 2. 使用unsafe块来进行零成本的类型转换
+                // let pcm_bytes: &[u8] = unsafe {
+                //     // a. 获取i16切片的裸指针和长度（以i16为单位）
+                //     let ptr = pcm_slice.as_ptr();
+                //     let len_in_i16 = pcm_slice.len();
+
+                //     // b. 使用`core::slice::from_raw_parts`来创建一个新的字节切片
+                //     //    - 将i16指针强制转换成u8指针
+                //     //    - 将长度（以i16为单位）乘以每个i16的字节数（2），得到总的字节长度
+                //     core::slice::from_raw_parts(
+                //         ptr as *const u8,
+                //         len_in_i16 * std::mem::size_of::<i16>(),
+                //     )
+                // };
+
+                // // 3. 使用 .chunks() 方法将整个PCM数据切分成多个小块
+                for chunk in pcm_stereo_bytes.chunks(CHUNK_SIZE) {
+                    // 4. 逐块写入I2S驱动
+                    //    i2s_driver.write() 会阻塞，直到这一小块数据被成功写入DMA
+                    match i2s_driver.write(chunk, BLOCK) {
+                        Ok(bytes_written) => {
+                            // 打印一些进度信息，方便调试
+                            info!("Successfully wrote {} bytes to I2S.", bytes_written);
+                        }
+                        Err(e) => {
+                            // 如果在写入过程中出错，打印错误并跳出循环
+                            info!("I2S write error on a chunk: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Opus decode error: {:?}", e);
+                return;
+            }
+        }
+    }
+}
+
+fn play_pcm_asset(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     const PCM_DATA: &'static [u8] = include_bytes!("../assets/sound.pcm");
 
     info!(

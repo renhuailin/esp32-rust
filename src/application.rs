@@ -280,11 +280,11 @@ impl Application {
         ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(
-            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        ));
+        // let audio_processor = Arc::new(Mutex::new(
+        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        // ));
 
-        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -301,7 +301,12 @@ impl Application {
         ));
 
         let opus_decoder = Arc::new(Mutex::new(
-            OpusAudioDecoder::new(sample_rate, channels).unwrap(),
+            OpusAudioDecoder::new(
+                sample_rate,
+                channels,
+                OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+            )
+            .unwrap(),
         ));
 
         // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长
@@ -527,7 +532,9 @@ impl Application {
         }
 
         info!("Enter event loop,开始处理内部事件 ...");
-        self.audio_alert("welcome");
+
+        // self.audio_alert("welcome");
+
         // 处理内部事件
         self.event_loop()?;
         Ok(())
@@ -1206,7 +1213,12 @@ impl Application {
 
         let sample_rate = 16000; //# 采样率固定为16000Hz
         let channels = 1; //# 单声道
-        let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        let mut opus_decoder = OpusAudioDecoder::new(
+            sample_rate,
+            channels,
+            OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+        )
+        .unwrap();
 
         let mut offset = 0;
 
@@ -1260,6 +1272,13 @@ impl Application {
                     // };
 
                     let pcm_sender = self.inner_pcm_tx.clone();
+
+                    // match pcm_sender.send(vec_pcm_data) {
+                    //     Ok(_) => {}
+                    //     Err(err) => {
+                    //         error!("Failed to send pcm data: {:?}", err);
+                    //     }
+                    // }
 
                     // // 3. 使用 .chunks() 方法将整个PCM数据切分成多个小块
                     for chunk in pcm_stereo_bytes.chunks(CHUNK_SIZE) {
@@ -1650,7 +1669,12 @@ fn run_audio_decode_task(
 
     let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
         info!("Starting audio decode task!");
-        let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+        let mut opus_decoder = OpusAudioDecoder::new(
+            sample_rate,
+            channels,
+            OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+        )
+        .unwrap();
         let mut shared_pcm_buffer: Vec<i16> = Vec::with_capacity(4096);
 
         let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
@@ -1762,7 +1786,12 @@ fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
 
     let sample_rate = 16000; //# 采样率固定为16000Hz
     let channels = 1; //# 单声道
-    let mut opus_decoder = OpusAudioDecoder::new(sample_rate, channels).unwrap();
+    let mut opus_decoder = OpusAudioDecoder::new(
+        sample_rate,
+        channels,
+        OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+    )
+    .unwrap();
 
     let mut offset = 0;
 

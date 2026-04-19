@@ -3,14 +3,18 @@ use esp_idf_sys::es32_component_opus::{
     opus_decode, opus_decoder_create, opus_decoder_ctl, opus_decoder_destroy, OpusDecoder,
     OPUS_RESET_STATE,
 };
-use log::info;
+use log::{error, info};
 pub struct OpusAudioDecoder {
     decoder: *mut OpusDecoder,
-    sample_rate: i32,
+    // sample_rate: i32,
+    channels: i32,
+    // duration_ms: i32,
+    pcm_buffer: Vec<i16>,
+    max_frame_size: usize,
 }
 
 impl OpusAudioDecoder {
-    pub fn new(sample_rate: i32, channels: i32) -> Result<Self> {
+    pub fn new(sample_rate: i32, channels: i32, duration_ms: i32) -> Result<Self> {
         // let error = std::ptr::null_mut();
         let mut error: i32 = 0;
         let decoder = unsafe { opus_decoder_create(sample_rate, channels, &mut error) };
@@ -22,9 +26,22 @@ impl OpusAudioDecoder {
             ));
         }
 
+        // 预分配 Opus 协议支持的绝对最大帧长 (120ms)
+        // 1. 决定并创建一个足够大的输出缓冲区
+        //    Opus文档建议缓冲区大小至少能容纳120ms的音频，以处理最坏情况。因为我们使用的是小智的 p3音频文件
+        // 我们知道 每帧存储了 60ms 的音频数据，采样频率是 16000Hz,bit per sample = 16bit,为什么是 16bit,我在开发日志里有记载。
+        //    对于48kHz采样率，120ms = 0.12s * 48000 samples/s = 5760 samples
+        //     对于16kHz采样率，60ms = 0.06s * 16000 samples/s = 960 samples
+        //    为了安全，我们创建一个稍大一些的Vec。
+        let max_frame_size = (2 * duration_ms * sample_rate / 1000) as usize * channels as usize;
+
         Ok(Self {
             decoder: decoder,
-            sample_rate,
+            // sample_rate,
+            channels,
+            // duration_ms,
+            pcm_buffer: vec![0i16; max_frame_size],
+            max_frame_size,
         })
     }
 
@@ -35,23 +52,24 @@ impl OpusAudioDecoder {
         //    对于48kHz采样率，120ms = 0.12s * 48000 samples/s = 5760 samples
         //     对于16kHz采样率，60ms = 0.06s * 16000 samples/s = 960 samples
         //    为了安全，我们创建一个稍大一些的Vec。
-        let max_frame_size: usize = (120 * self.sample_rate / 1000) as usize;
+        // let max_frame_size: usize = (120 * self.sample_rate / 1000) as usize;
         // info!("max_frame_size: {}", max_frame_size);
 
-        const CHANNELS: usize = 1; // 假设是单声道
-        let mut pcm_buffer: Vec<i16> = vec![0; max_frame_size * CHANNELS];
+        // const CHANNELS: usize = 1; // 假设是单声道
+        // let mut pcm_buffer: Vec<i16> = vec![0; max_frame_size * self.channels as usize];
 
         // 2. 准备其他参数
 
         let opus_packet_len = opus_packet_data.len() as i32;
+        info!("opus_packet_len: {}", opus_packet_len);
         // let mut decoded_samples = 0;
         let decoded_samples = unsafe {
             opus_decode(
                 self.decoder,
                 opus_packet_data.as_ptr(),
                 opus_packet_len,
-                pcm_buffer.as_mut_ptr(),
-                max_frame_size as i32,
+                self.pcm_buffer.as_mut_ptr(),
+                self.max_frame_size as i32,
                 0,
             )
         };
@@ -62,7 +80,27 @@ impl OpusAudioDecoder {
                 decoded_samples
             ));
         } else {
-            return Ok(pcm_buffer);
+            let samples = decoded_samples as usize;
+            let total_samples = samples * self.channels as usize;
+
+            // 严谨校验：确保不会越界
+            if total_samples <= self.pcm_buffer.len() {
+                // ✅ 使用 usize 切片，完美解决编译错误
+                let valid_pcm = &self.pcm_buffer[..total_samples];
+                return Ok(valid_pcm.to_vec());
+            } else {
+                error!(
+                    "解码输出超出缓冲区！Buffer: {}, Needed: {}",
+                    self.pcm_buffer.len(),
+                    total_samples
+                );
+                return Err(anyhow::anyhow!(
+                    "解码输出超出缓冲区！Buffer: {}, Needed: {}",
+                    self.pcm_buffer.len(),
+                    total_samples
+                ));
+            }
+            // let valid_slice = &pcm_buffer[..decoded_samples * 1];
         }
     }
 

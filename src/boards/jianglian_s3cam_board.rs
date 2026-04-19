@@ -343,12 +343,14 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn start_network(&mut self) -> Result<()> {
-        info!("Start network");
-        let wifi_connected = self.start_wifi_station()?;
-        if !wifi_connected {
-            self.wifi_config_mode = true;
-            self.start_wifi_ap()?;
-        }
+        self.wifi_scan()?;
+
+        // info!("Start network");
+        // let wifi_connected = self.start_wifi_station()?;
+        // if !wifi_connected {
+        //     self.wifi_config_mode = true;
+        //     self.start_wifi_ap()?;
+        // }
 
         Ok(())
     }

@@ -1,6 +1,4 @@
-use esp_idf_svc::nvs::{
-    EspCustomNvsPartition, EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsCustom, NvsDefault,
-};
+use esp_idf_svc::nvs::{EspCustomNvsPartition, EspNvs, EspNvsPartition, NvsCustom};
 use log::{error, info};
 
 ///https://docs.esp-rs.org/esp-idf-svc/esp_idf_svc/nvs/struct.EspNvs.html

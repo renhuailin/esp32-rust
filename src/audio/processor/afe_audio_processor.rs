@@ -1,8 +1,7 @@
 use std::ffi::{c_void, CStr, CString};
+use std::ptr;
 use std::sync::{Arc, Condvar, Mutex};
-use std::{ptr, thread};
 
-use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_sys::es32_component_esp_sr::{
     aec_mode_t_AEC_MODE_VOIP_HIGH_PERF, afe_config_init,
     afe_memory_alloc_mode_t_AFE_MEMORY_ALLOC_MORE_PSRAM, afe_mode_t_AFE_MODE_HIGH_PERF,
@@ -51,6 +50,8 @@ pub struct AfeAudioProcessor {
     afe_data: SendPtr<esp_afe_sr_data_t>,
     afe_iface: SendPtr<esp_afe_sr_iface_t>,
 
+    input_channels: usize,
+
     // 共享状态 + 条件变量
     state: Arc<Mutex<ProcessorState>>,
     cond: Arc<Condvar>,
@@ -92,6 +93,33 @@ impl AfeAudioProcessor {
         // char *vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
         let model_c_str = CString::new("model").unwrap();
         let models = unsafe { esp_srmodel_init(model_c_str.as_ptr() as *const u8) };
+
+        unsafe {
+            if models.is_null() {
+                error!("没有找到 model 分区！");
+            } else {
+                let count = (*models).num as usize;
+                info!("成功加载模型列表，共有 {} 个模型，开始遍历：", count);
+
+                for i in 0..count {
+                    // 通过指针偏移访问第 i 个元素的名称
+                    // model_name 是 *mut *mut c_char，即 char**
+                    let name_ptr = *((*models).model_name.add(i));
+
+                    if !name_ptr.is_null() {
+                        let name = CStr::from_ptr(name_ptr).to_string_lossy();
+                        info!("找到模型文件索引 {}: {}", i, name);
+                    }
+                }
+            }
+        }
+
+        if models.is_null() {
+            error!("没有找到 model 分区！");
+        } else {
+            info!("成功加载模型列表");
+        }
+
         let ns_model_name =
             unsafe { esp_srmodel_filter(models, ESP_NSNET_PREFIX.as_ptr(), std::ptr::null()) };
         let vad_model_name =
@@ -159,7 +187,7 @@ impl AfeAudioProcessor {
         // afe_config->agc_init = false;
         // afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         (unsafe { *afe_config }).afe_perferred_core = 1;
-        (unsafe { *afe_config }).afe_perferred_priority = 1;
+        (unsafe { *afe_config }).afe_perferred_priority = 5;
         (unsafe { *afe_config }).agc_init = false;
         (unsafe { *afe_config }).memory_alloc_mode =
             afe_memory_alloc_mode_t_AFE_MEMORY_ALLOC_MORE_PSRAM;
@@ -174,7 +202,7 @@ impl AfeAudioProcessor {
 
         // TODO:: AEC相关
         (unsafe { *afe_config }).aec_init = false;
-        (unsafe { *afe_config }).vad_init = true;
+        (unsafe { *afe_config }).vad_init = false;
 
         // afe_iface_ = esp_afe_handle_from_config(afe_config);
         // afe_data_ = afe_iface_->create_from_config(afe_config);
@@ -196,6 +224,8 @@ impl AfeAudioProcessor {
         }));
         let cond = Arc::new(Condvar::new());
 
+        let input_channels = codec.lock().unwrap().input_channels() as usize;
+
         let mut processor = Self {
             codec: codec,
             // afe_data: afe_data,
@@ -204,6 +234,7 @@ impl AfeAudioProcessor {
             afe_iface: SendPtr(afe_iface as *mut _), // iface 通常是 const，强转一下存起来
             state: state.clone(),
             cond: cond.clone(),
+            input_channels,
         };
 
         info!("New iface ptr: {:p}", afe_iface); // 在 new 里
@@ -221,124 +252,6 @@ impl AfeAudioProcessor {
         // 注意：这里假设 ESP-SR 库是线程安全的
         let afe_iface_wrapper = self.afe_iface;
         let afe_data_wrapper = self.afe_data;
-
-        // match thread::Builder::new()
-        //     .name("afe_task".into())
-        //     .stack_size(32 * 1024)
-        //     .spawn(move || {
-        //         let afe_iface = afe_iface_wrapper.as_ptr() as *const esp_afe_sr_iface_t;
-        //         let afe_data = afe_data_wrapper.as_ptr();
-
-        //         unsafe {
-        //             let fetch_size = ((*afe_iface).get_fetch_chunksize.unwrap())(afe_data);
-        //             let feed_size = ((*afe_iface).get_feed_chunksize.unwrap())(afe_data);
-        //             info!(
-        //                 "Audio task started, feed: {}, fetch: {}",
-        //                 feed_size, fetch_size
-        //             );
-
-        //             loop {
-        //                 info!("等待运行信号");
-        //                 // --- 阶段 1: 等待运行信号 ---
-        //                 let mut state_guard = state_clone.lock().unwrap();
-
-        //                 while !state_guard.is_running {
-        //                     // wait 会释放锁并挂起线程，被 notify 唤醒后会重新获取锁
-        //                     state_guard = cond_clone.wait(state_guard).unwrap();
-        //                 }
-
-        //                 // --- 阶段 2: 释放锁，执行耗时操作 ---
-        //                 // 必须释放锁，否则主线程调用 stop() 时会死锁
-        //                 drop(state_guard);
-
-        //                 // 调用 C 函数获取音频数据
-        //                 // portMAX_DELAY 在 Rust 中对应 u32::MAX
-        //                 info!("调用 C 函数获取音频数据");
-        //                 let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
-
-        //                 // --- 阶段 3: 重新获取锁处理结果 ---
-        //                 let mut state_guard = state_clone.lock().unwrap();
-
-        //                 // 再次检查运行状态 (防止在 fetch 期间被 stop)
-        //                 if !state_guard.is_running {
-        //                     continue;
-        //                 }
-
-        //                 if res.is_null() || (*res).ret_value == ESP_FAIL {
-        //                     if !res.is_null() {
-        //                         info!("AFE Fetch Error code: {}", (*res).ret_value);
-        //                     }
-        //                     continue;
-        //                 }
-
-        //                 // --- 阶段 4: 处理回调 ---
-
-        //                 // VAD (语音活动检测) 状态变化
-        //                 // if let Some(ref mut vad_cb) = state_guard.vad_callback {
-        //                 //     if (*res).vad_state == vad_state_t_VAD_SPEECH
-        //                 //         && !state_guard.is_speaking
-        //                 //     {
-        //                 //         state_guard.is_speaking = true;
-        //                 //         vad_cb(true);
-        //                 //     } else if (*res).vad_state == vad_state_t_VAD_SILENCE
-        //                 //         && state_guard.is_speaking
-        //                 //     {
-        //                 //         state_guard.is_speaking = false;
-        //                 //         vad_cb(false);
-        //                 //     }
-        //                 // }
-        //                 let mut vad_event = None; // 用于临时存储需要触发的事件
-
-        //                 if (*res).vad_state == vad_state_t_VAD_SPEECH && !state_guard.is_speaking {
-        //                     state_guard.is_speaking = true;
-        //                     vad_event = Some(true); // 需要触发"开始说话"
-        //                 } else if (*res).vad_state == vad_state_t_VAD_SILENCE
-        //                     && state_guard.is_speaking
-        //                 {
-        //                     state_guard.is_speaking = false;
-        //                     vad_event = Some(false); // 需要触发"停止说话"
-        //                 }
-
-        //                 // 2. 如果有事件发生，再获取回调函数进行调用
-        //                 // 此时上面的逻辑已经结束，state_guard 的借用已经释放，可以再次借用
-        //                 if let Some(is_speaking) = vad_event {
-        //                     info!("VAD 状态变化: is_speaking!");
-        //                     if let Some(ref mut vad_cb) = state_guard.vad_callback {
-        //                         vad_cb(is_speaking);
-        //                     }
-        //                 }
-        //                 info!("输出音频数据");
-        //                 // 输出音频数据
-        //                 if let Some(ref mut out_cb) = state_guard.output_callback {
-        //                     let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
-        //                     // 从 C 指针创建切片，然后转为 Vec (发生内存拷贝)
-        //                     let data_slice =
-        //                         std::slice::from_raw_parts((*res).data as *const i16, data_len);
-        //                     out_cb(data_slice.to_vec());
-        //                 }
-        //             }
-        //         }
-        //     }) {
-        //     Ok(_) => {
-        //         info!("success to spawn audio processing thread");
-        //     }
-        //     Err(_) => {
-        //         error!("Failed to spawn audio processing thread");
-        //     }
-        // }
-
-        // // 启动一个线程来读取音频数据
-        // ThreadSpawnConfiguration {
-        //     name: Some(b"afe_task\0"),
-        //     stack_size: 4 * 1204,
-        //     priority: 5,
-        //     pin_to_core: Some(1.into()), // 绑定到 Core 1
-        //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-        //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-        //     ..Default::default()
-        // }
-        // .set()
-        // .unwrap();
 
         let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
             let afe_iface = afe_iface_wrapper.as_ptr() as *const esp_afe_sr_iface_t;
@@ -518,7 +431,7 @@ impl AudioProcessor for AfeAudioProcessor {
         unsafe {
             ((*self.afe_iface.as_ptr()).get_feed_chunksize.unwrap())(self.afe_data.as_ptr())
                 as usize
-                * self.codec.lock().unwrap().input_channels() as usize
+                * self.input_channels
         }
     }
 

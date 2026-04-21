@@ -39,11 +39,11 @@ where
             is_open: false,
             enabled: false,
             clock_off_status: 0,
-            // input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
-            input_mics: ES7210_INPUT_MIC1
-                | ES7210_INPUT_MIC2
-                | ES7210_INPUT_MIC3
-                | ES7210_INPUT_MIC4,
+            input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
+            // input_mics: ES7210_INPUT_MIC1
+            //     | ES7210_INPUT_MIC2
+            //     | ES7210_INPUT_MIC3
+            //     | ES7210_INPUT_MIC4,
         }
     }
 
@@ -173,7 +173,7 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0x01, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0x0F, 30.0)?;
 
         self.enabled = true;
 

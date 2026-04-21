@@ -69,7 +69,7 @@ impl XiaozhiAudioCodec {
             output_enabled: false,
             output_volume: 0,
             i2s_driver: Arc::new(Mutex::new(i2s_driver)),
-            input_reference: true,
+            input_reference: input_reference,
             input_channels,
         }
     }

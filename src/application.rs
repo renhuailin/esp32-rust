@@ -280,11 +280,11 @@ impl Application {
         ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        // let audio_processor = Arc::new(Mutex::new(
-        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        // ));
+        let audio_processor = Arc::new(Mutex::new(
+            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        ));
 
-        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -1312,8 +1312,8 @@ fn audio_loop(
     let feed_size = audio_processor.lock().unwrap().get_feed_size();
     info!("application: feed_size: {}", feed_size);
     // const READ_CHUNK_SIZE: usize = 1024;
-    // let mut read_buffer = vec![0u8; feed_size];
-    let mut read_buffer = vec![0u8; 1024];
+    let mut read_buffer = vec![0u8; feed_size];
+    // let mut read_buffer = vec![0u8; 1024];
     loop {
         start_audio_input(
             Arc::clone(&audio_codec),
@@ -1326,7 +1326,7 @@ fn audio_loop(
             start_audio_output(codec_arc, audio_processor_arc.clone());
         }
 
-        thread::sleep(Duration::from_millis(10));
+        // thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1341,6 +1341,7 @@ fn start_audio_input(
     audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
     mut read_buffer: &mut Vec<u8>,
 ) {
+    thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
     // if (audio_processor_->IsRunning())
     // {
     //     std::vector<int16_t> data;
@@ -1437,9 +1438,7 @@ fn start_audio_input(
         }
     }
 
-    thread::sleep(Duration::from_millis(10));
-
-    // thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
+    // thread::sleep(Duration::from_millis(10));
 }
 
 fn decode_opus_audio1(

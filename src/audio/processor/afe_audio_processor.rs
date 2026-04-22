@@ -1,6 +1,7 @@
 use std::ffi::{c_void, CStr, CString};
-use std::ptr;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+use std::{ptr, thread};
 
 use esp_idf_sys::es32_component_esp_sr::{
     aec_mode_t_AEC_MODE_VOIP_HIGH_PERF, afe_config_init,
@@ -59,12 +60,8 @@ pub struct AfeAudioProcessor {
 impl AfeAudioProcessor {
     pub fn new(codec: Arc<Mutex<dyn AudioCodec + 'static>>) -> Result<Self, anyhow::Error> {
         info!("Initializing AfeAudioProcessor");
-        // let ref_num = audio_codec.lock().unwrap().input_reference();
-        let ref_num = if codec.lock().unwrap().input_reference() {
-            1
-        } else {
-            0
-        };
+        let input_reference = codec.lock().unwrap().input_reference();
+        let ref_num = if input_reference { 1 } else { 0 };
 
         // std::string input_format;
         // for (int i = 0; i < codec_->input_channels() - ref_num; i++)
@@ -75,6 +72,11 @@ impl AfeAudioProcessor {
         // {
         //     input_format.push_back('R');
         // }
+        info!(
+            "codec.input_reference(): {} ref_num: {}",
+            input_reference, ref_num
+        );
+
         let mut input_format = "".to_string();
         let input_channels = codec.lock().unwrap().input_channels();
         info!("input_channels: {}", input_channels);
@@ -187,7 +189,7 @@ impl AfeAudioProcessor {
         // afe_config->agc_init = false;
         // afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
         (unsafe { *afe_config }).afe_perferred_core = 1;
-        (unsafe { *afe_config }).afe_perferred_priority = 5;
+        (unsafe { *afe_config }).afe_perferred_priority = 1;
         (unsafe { *afe_config }).agc_init = false;
         (unsafe { *afe_config }).memory_alloc_mode =
             afe_memory_alloc_mode_t_AFE_MEMORY_ALLOC_MORE_PSRAM;
@@ -245,6 +247,7 @@ impl AfeAudioProcessor {
     }
 
     fn audio_processor_task(&mut self) {
+        info!("in audio_processor_task !!!!!!!!!");
         let state_clone = self.state.clone();
         let cond_clone = self.cond.clone();
 
@@ -270,8 +273,8 @@ impl AfeAudioProcessor {
                     // --- 阶段 1: 等待运行信号 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
-                    info!("while !state_guard.is_running ");
                     while !state_guard.is_running {
+                        info!("in while !state_guard.is_running ");
                         // wait 会释放锁并挂起线程，被 notify 唤醒后会重新获取锁
                         state_guard = cond_clone.wait(state_guard).unwrap();
                     }
@@ -285,6 +288,14 @@ impl AfeAudioProcessor {
                     // 调用 C 函数获取音频数据
                     // portMAX_DELAY 在 Rust 中对应 u32::MAX
                     let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
+                    if res.is_null() || (*res).ret_value == ESP_FAIL {
+                        if !res.is_null() {
+                            info!("AFE Fetch Error code: {}", (*res).ret_value);
+                        }
+                        continue;
+                    }
+                    info!("已经取到 res");
+                    // continue;
 
                     info!("阶段 3: 重新获取锁处理结果");
                     // --- 阶段 3: 重新获取锁处理结果 ---
@@ -292,13 +303,6 @@ impl AfeAudioProcessor {
 
                     // 再次检查运行状态 (防止在 fetch 期间被 stop)
                     if !state_guard.is_running {
-                        continue;
-                    }
-
-                    if res.is_null() || (*res).ret_value == ESP_FAIL {
-                        if !res.is_null() {
-                            info!("AFE Fetch Error code: {}", (*res).ret_value);
-                        }
                         continue;
                     }
 
@@ -372,6 +376,8 @@ impl AudioProcessor for AfeAudioProcessor {
         // 移除不必要的日志输出以减少栈使用
         // info!("feed audio data!");
 
+        thread::sleep(Duration::from_millis(1000 * 2));
+
         if data.is_empty() {
             return;
         }
@@ -392,16 +398,18 @@ impl AudioProcessor for AfeAudioProcessor {
                 data_ptr, data
             );
             if let Some(feed_func) = (*iface_ptr).feed {
-                info!("feed_func: {:?}", feed_func);
+                // info!("feed_func: {:?}", feed_func);
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
-                if ret != 0 {
-                    // 只在错误时输出日志
-                    info!("Feed returned error: {}", ret);
-                }
+                info!("Feed returned : {}", ret);
+                // if ret != 0 {
+                //     // 只在错误时输出日志
+                //     info!("Feed returned error: {}", ret);
+                // }
             } else {
                 error!("Critical: AFE feed function pointer is null!");
             }
         }
+        info!("feed audio data end!");
     }
 
     fn start(&mut self) {
@@ -413,13 +421,13 @@ impl AudioProcessor for AfeAudioProcessor {
     }
 
     fn stop(&mut self) {
-        // info!("stop audio processor!!!!!!");
-        // let mut state = self.state.lock().unwrap();
-        // state.is_running = false;
-        // // 释放锁后，线程会在下一次循环检查时暂停
-        // unsafe {
-        //     ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
-        // }
+        info!("stop audio processor!!!!!!");
+        let mut state = self.state.lock().unwrap();
+        state.is_running = false;
+        // 释放锁后，线程会在下一次循环检查时暂停
+        unsafe {
+            ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
+        }
     }
 
     fn is_running(&self) -> bool {
@@ -470,7 +478,7 @@ impl Drop for AfeAudioProcessor {
         // if (afe_data_ != nullptr) {
         //     afe_iface_->destroy(afe_data_);
         // }
-
+        info!("AFE audio processor destroyed");
         unsafe {
             if !self.afe_data.as_ptr().is_null() {
                 ((*self.afe_iface.as_ptr()).destroy.unwrap())(self.afe_data.as_ptr());

@@ -473,24 +473,49 @@ impl Application {
                 }
             }));
 
-        // 启动一个线程来读取音频数据
-        ThreadSpawnConfiguration {
-            name: Some(b"audio_loop\0"),
-            stack_size: 64 * 1024,
-            priority: 5,
-            pin_to_core: Some(1.into()), // 绑定到 Core 1
+        // // 启动一个线程来读取音频数据
+        // ThreadSpawnConfiguration {
+        //     name: Some(b"audio_loop\0"),
+        //     stack_size: 4096 * 2,
+        //     priority: 5,
+        //     pin_to_core: Some(1.into()), // 绑定到 Core 1
 
-            // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-            // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-            inherit: false,
-            ..Default::default()
-        }
-        .set()
-        .unwrap();
-        let _ = thread::spawn(move || {
+        //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
+        //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
+        //     inherit: false,
+        //     ..Default::default()
+        // }
+        // .set()
+        // .unwrap();
+        // let _ = thread::spawn(move || {
+        //     audio_loop(codec_clone, audio_processor);
+        // });
+        // ThreadSpawnConfiguration::default().set().unwrap();
+
+        let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
             audio_loop(codec_clone, audio_processor);
         });
-        ThreadSpawnConfiguration::default().set().unwrap();
+
+        let closure_box = Box::new(task_closure);
+        let closure_ptr = Box::into_raw(closure_box);
+
+        info!("try to call xTaskCreatePinnedToCore in the unsafe block");
+        unsafe {
+            let res = esp_idf_sys::xTaskCreatePinnedToCore(
+                Some(c_task_trampoline),
+                b"audio_loop\0".as_ptr() as *const u8,
+                4096 * 2,
+                closure_ptr as *mut c_void,
+                8,
+                ptr::null_mut(),
+                1,
+            );
+            // if res != esp_idf_sys::pdPass {
+            //     // 如果创建失败，记得收回内存，否则会泄漏
+            //     let _ = Box::from_raw(closure_ptr);
+            //     error!("Failed to create task");
+            // }
+        }
 
         info!("启动解码线程 start_output_audio ...");
         self.start_output_audio();
@@ -1404,6 +1429,8 @@ fn start_audio_input(
             .read_audio_data(&mut read_buffer) // 确保 read_audio_data 不会溢出
             .unwrap();
 
+        info!("从codec读取音频数据的bytes_read = {}", bytes_read);
+
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
 
@@ -1428,6 +1455,8 @@ fn start_audio_input(
             // let duration = start.elapsed();
             // info!("数据转换 耗时: {:?}", duration);
             info!("application: feed data to audio processor");
+
+            info!("真正喂进去的 i16 长度: {}", bytes_to_i16_result.len());
 
             // // 3. 再次获取锁进行 feed
             // // 此时 codec 的锁已经释放了，避免交叉死锁

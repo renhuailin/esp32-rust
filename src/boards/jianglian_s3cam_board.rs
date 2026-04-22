@@ -8,13 +8,12 @@ use esp_idf_hal::{
     gpio::AnyInputPin,
     i2c::{I2cConfig, I2cDriver},
     i2s::{
-        config::{DataBitWidth, StdConfig},
+        config::{DataBitWidth, StdConfig, TdmConfig},
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
     peripheral,
-    prelude::Peripherals,
-    prelude::*,
+    prelude::{Peripherals, *},
     spi::SpiDriver,
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -120,6 +119,7 @@ impl JiangLianS3CamBoard {
         let es7210_i2c_proxy = bus_manager.acquire_i2c();
 
         // 初始化I2S
+        // let tdm_config = TdmConfig::default();
         let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
 
         let bclk = pins.gpio42;
@@ -219,11 +219,11 @@ impl JiangLianS3CamBoard {
     }
 
     fn wifi_scan(&mut self) -> Result<()> {
-        let ssid = "CU_liu81802";
-        let password = "china-ops";
+        // let ssid = "CU_liu81802";
+        // let password = "china-ops";
 
-        // let ssid = "1802";
-        // let password = "20250101";
+        let ssid = "1802";
+        let password = "20250101";
 
         self.wifi_driver.connect(ssid, password)?;
         Ok(())

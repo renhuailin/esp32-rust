@@ -196,7 +196,7 @@ where
         //     fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         // }
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        // self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
         self.set_mute(false)?;
         self.enabled = true;
 
@@ -266,7 +266,7 @@ where
         // }
         // return (mic_num >= ENABLE_TDM_MAX_NUM);
 
-        return true;
+        return false;
 
         // let mut mic_num = 0;
         // for i in 1..=4 {

@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
-    gpio::AnyInputPin,
+    gpio::{AnyInputPin, Pin},
     i2c::{I2cConfig, I2cDriver},
     i2s::{
         config::{DataBitWidth, StdConfig, TdmConfig},
@@ -17,7 +17,6 @@ use esp_idf_hal::{
     spi::SpiDriver,
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_sys::err_enum_t_ERR_TIMEOUT;
 use log::{error, info};
 
 use crate::{
@@ -26,6 +25,7 @@ use crate::{
     boards::board::Board,
     common::{application_context::ApplicationContext, gpio_button::Button},
     display::{lcd::st7789::LcdSt7789, Display},
+    i2s::mixed_i2s::MixedI2sDriver,
     wifi::{
         ssid_manager::SsidMananger,
         wifi_driver::{Esp32WifiDriver, WifiAP, WifiStation},
@@ -125,18 +125,28 @@ impl JiangLianS3CamBoard {
         let bclk = pins.gpio42;
         let din = pins.gpio45;
         let dout = pins.gpio39;
-        let mclk = pins.gpio41.into();
+        let mclk = pins.gpio41;
         let ws = pins.gpio40;
 
         // i2s_config
-        let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
-            peripherals.i2s0,
-            &std_config,
-            bclk,
-            din,
-            dout,
-            mclk,
-            ws,
+        // let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+        //     peripherals.i2s0,
+        //     &std_config,
+        //     bclk,
+        //     din,
+        //     dout,
+        //     mclk,
+        //     ws,
+        // )
+        // .unwrap();
+
+        let i2s_driver = MixedI2sDriver::new(
+            16000,
+            mclk.pin(),
+            bclk.pin(),
+            ws.pin(),
+            dout.pin(),
+            din.pin(),
         )
         .unwrap();
 
@@ -219,11 +229,11 @@ impl JiangLianS3CamBoard {
     }
 
     fn wifi_scan(&mut self) -> Result<()> {
-        // let ssid = "CU_liu81802";
-        // let password = "china-ops";
+        let ssid = "CU_liu81802";
+        let password = "china-ops";
 
-        let ssid = "1802";
-        let password = "20250101";
+        // let ssid = "1802";
+        // let password = "20250101";
 
         self.wifi_driver.connect(ssid, password)?;
         Ok(())

@@ -289,6 +289,7 @@ impl AfeAudioProcessor {
                     // portMAX_DELAY 在 Rust 中对应 u32::MAX
                     let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
                     if res.is_null() || (*res).ret_value == ESP_FAIL {
+                        info!("AFE Fetch failed");
                         if !res.is_null() {
                             info!("AFE Fetch Error code: {}", (*res).ret_value);
                         }
@@ -331,9 +332,9 @@ impl AfeAudioProcessor {
                         }
                     }
 
-                    info!("输出音频数据");
                     // 输出音频数据
                     if let Some(ref mut out_cb) = state_guard.output_callback {
+                        info!("输出音频数据");
                         let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
                         // 从 C 指针创建切片，然后转为 Vec (发生内存拷贝)
                         let data_slice =
@@ -376,7 +377,7 @@ impl AudioProcessor for AfeAudioProcessor {
         // 移除不必要的日志输出以减少栈使用
         // info!("feed audio data!");
 
-        thread::sleep(Duration::from_millis(1000 * 2));
+        // thread::sleep(Duration::from_millis(1000 * 2));
 
         if data.is_empty() {
             return;

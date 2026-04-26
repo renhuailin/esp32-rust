@@ -1,3 +1,10 @@
+use crate::audio::codec::types::AudioStreamPacket;
+use anyhow::{Error, Result};
+use esp_idf_hal::{
+    delay::BLOCK,
+    i2s::{I2sBiDir, I2sDriver},
+    task::thread::ThreadSpawnConfiguration,
+};
 use std::{
     collections::VecDeque,
     ffi::{c_void, CStr},
@@ -8,13 +15,6 @@ use std::{
     },
     thread,
     time::Duration,
-};
-
-use anyhow::{Error, Result};
-use esp_idf_hal::{
-    delay::BLOCK,
-    i2s::{I2sBiDir, I2sDriver},
-    task::thread::ThreadSpawnConfiguration,
 };
 
 use esp_idf_sys::{
@@ -29,7 +29,7 @@ use crate::{
         codec::{
             audio_codec::AudioCodec,
             opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
-            AudioStreamPacket, MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
+            MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
         processor::{
             afe_audio_processor::AfeAudioProcessor, audio_processor::AudioProcessor,
@@ -280,11 +280,11 @@ impl Application {
         ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(
-            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        ));
+        // let audio_processor = Arc::new(Mutex::new(
+        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        // ));
 
-        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -466,6 +466,7 @@ impl Application {
             .lock()
             .unwrap()
             .on_output(Box::new(move |data| {
+                // info!("on audio processor output,data length: {}", data.len());
                 // 发送到编码线程,编码成opus.
                 if let Err(e) = pcm_tx.send(data) {
                     // 如果发送失败（比如编码线程挂了），打印个日志，不要 panic
@@ -1423,13 +1424,15 @@ fn start_audio_input(
         // }
         // read_buffer.resize(1024, 0);
 
-        let bytes_read = codec
-            .lock()
-            .unwrap()
-            .read_audio_data(&mut read_buffer) // 确保 read_audio_data 不会溢出
-            .unwrap();
+        let bytes_read = match codec.lock().unwrap().read_audio_data(&mut read_buffer) {
+            Ok(bytes_read) => bytes_read,
+            Err(e) => {
+                error!("application: read_audio_data error: {:?}", e);
+                0
+            }
+        };
 
-        info!("从codec读取音频数据的bytes_read = {}", bytes_read);
+        // info!("从codec读取音频数据的bytes_read = {}", bytes_read);
 
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
@@ -1454,9 +1457,19 @@ fn start_audio_input(
 
             // let duration = start.elapsed();
             // info!("数据转换 耗时: {:?}", duration);
-            info!("application: feed data to audio processor");
+            // info!("application: feed data to audio processor");
 
-            info!("真正喂进去的 i16 长度: {}", bytes_to_i16_result.len());
+            // info!("真正喂进去的 i16 长度: {}", bytes_to_i16_result.len());
+
+            // 打印最大振幅，以调试es7210的输出音量
+            let max_val = bytes_to_i16_result
+                .iter()
+                .map(|&x| if x == i16::MIN { 32767 } else { x.abs() })
+                .max()
+                .unwrap_or(0);
+            if max_val >= 10000 && max_val <= 28000 {
+                info!("检测到合理的音频数据: {}", max_val);
+            }
 
             // // 3. 再次获取锁进行 feed
             // // 此时 codec 的锁已经释放了，避免交叉死锁

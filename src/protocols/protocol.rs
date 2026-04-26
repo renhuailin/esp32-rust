@@ -1,7 +1,7 @@
 use anyhow::{Error, Result};
 
 use crate::{
-    audio::codec::AudioStreamPacket,
+    audio::codec::types::AudioStreamPacket,
     common::enums::{AbortReason, ListeningMode},
 };
 pub trait Protocol {

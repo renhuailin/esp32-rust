@@ -28,3 +28,13 @@ pub enum DeviceState {
     Listening,
     Starting,
 }
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum I2SFormat {
+    Min = -1,
+    Normal = 0,
+    Left = 1,
+    Right = 2,
+    DSP = 3,
+    Max,
+}

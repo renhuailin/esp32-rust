@@ -1,10 +1,10 @@
+pub mod application;
 pub mod audio;
 pub mod axp173;
-pub mod common;
-// pub mod i2s;
-pub mod application;
 pub mod boards;
+pub mod common;
 pub mod display;
+pub mod i2s;
 pub mod lcd;
 pub mod led;
 pub mod protocols;

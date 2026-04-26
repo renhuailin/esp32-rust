@@ -2,9 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     audio::codec::{
-        audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311,
-        opus::decoder::OpusAudioDecoder,
+        audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311, make_channel_mask,
+        opus::decoder::OpusAudioDecoder, types::CodecSampleInfo,
     },
+    i2s::mixed_i2s::MixedI2sDriver,
     setting::nvs_setting::NvsSetting,
 };
 use anyhow::{Error, Result};
@@ -23,7 +24,7 @@ pub struct XiaozhiAudioCodec {
     input_enabled: bool,
     output_enabled: bool,
     output_volume: u8,
-    i2s_driver: Arc<Mutex<I2sDriver<'static, I2sBiDir>>>,
+    i2s_driver: Arc<Mutex<MixedI2sDriver>>,
     input_reference: bool,
     input_channels: i32,
 }
@@ -32,7 +33,7 @@ impl XiaozhiAudioCodec {
     pub fn new(
         es8311_i2c_proxy: I2cProxy,
         es7210_i2c_proxy: I2cProxy,
-        i2s_driver: I2sDriver<'static, I2sBiDir>,
+        i2s_driver: MixedI2sDriver,
     ) -> Self {
         let mut es8311 = Es8311::new(es8311_i2c_proxy);
         let mut delay = Delay::new_default();
@@ -89,6 +90,18 @@ impl AudioCodec for XiaozhiAudioCodec {
         }
 
         if enable {
+            let mut fs = CodecSampleInfo {
+                bits_per_sample: 16,
+                channel: 4,
+                channel_mask: make_channel_mask(0) as u16,
+                sample_rate: 16000,
+                mclk_multiple: 0,
+            };
+            if self.input_reference {
+                fs.channel_mask |= make_channel_mask(1) as u16;
+            }
+            self.input_codec.set_fs(fs)?;
+
             self.input_codec.enable()?;
         } else {
             self.input_codec.disable()?;
@@ -145,7 +158,7 @@ impl AudioCodec for XiaozhiAudioCodec {
     fn read_audio_data(&mut self, mut buffer: &mut Vec<u8>) -> Result<usize, Error> {
         let i2s_driver_arc = self.i2s_driver.clone();
         let mut i2s_driver = i2s_driver_arc.lock().unwrap();
-        let bytes_read = i2s_driver.read(&mut buffer, 50)?;
+        let bytes_read = i2s_driver.read(&mut buffer, 1000)?;
         return Ok(bytes_read);
     }
 

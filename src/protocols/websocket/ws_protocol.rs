@@ -11,7 +11,7 @@ use esp_idf_svc::ws::FrameType;
 use esp_idf_sys::EspError;
 use log::{debug, error, info};
 
-use crate::audio::codec::AudioStreamPacket;
+use crate::audio::codec::types::AudioStreamPacket;
 use crate::common::enums::{AbortReason, ListeningMode};
 use crate::common::event::{AppEvent, WsEvent};
 use crate::protocols::protocol::Protocol;
@@ -162,7 +162,7 @@ impl Protocol for WebSocketProtocol {
 
         let timeout = Duration::from_secs(10);
 
-        let ws_url = "ws://192.168.1.208:8000/xiaozhi/v1/";
+        let ws_url = "ws://192.168.1.40:8000/xiaozhi/v1/";
         // let ws_url = "ws://192.168.1.121:8000/xiaozhi/v1/";
 
         let config = EspWebSocketClientConfig {

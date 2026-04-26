@@ -61,7 +61,7 @@ impl OpusAudioDecoder {
         // 2. 准备其他参数
 
         let opus_packet_len = opus_packet_data.len() as i32;
-        info!("opus_packet_len: {}", opus_packet_len);
+        // info!("opus_packet_len: {}", opus_packet_len);
         // let mut decoded_samples = 0;
         let decoded_samples = unsafe {
             opus_decode(

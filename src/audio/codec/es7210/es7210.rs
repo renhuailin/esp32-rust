@@ -196,7 +196,7 @@ where
         //     fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         // }
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_channel_gain(0x01, 0xF, 30.0)?;
         self.set_mute(false)?;
         self.enabled = true;
 
@@ -634,7 +634,7 @@ where
     }
 
     fn dump_regs(&mut self) -> Result<(), anyhow::Error> {
-        // return Ok(());
+        return Ok(());
 
         // audio_codec_es7210_t *codec = (audio_codec_es7210_t *)h;
         // if (codec == NULL)

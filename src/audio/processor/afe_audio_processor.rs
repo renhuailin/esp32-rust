@@ -80,6 +80,7 @@ impl AfeAudioProcessor {
         let mut input_format = "".to_string();
         let input_channels = codec.lock().unwrap().input_channels();
         info!("input_channels: {}", input_channels);
+
         for _ in 0..(input_channels - ref_num) {
             input_format.push('M');
         }
@@ -88,7 +89,6 @@ impl AfeAudioProcessor {
         }
 
         info!("AFE Input Format: {}", input_format); // 比如 "MR"
-        info!("Codec Channels: {}", codec.lock().unwrap().input_channels());
 
         // srmodel_list_t *models = esp_srmodel_init("model");
         // char *ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
@@ -203,7 +203,7 @@ impl AfeAudioProcessor {
         // #endif
 
         // TODO:: AEC相关
-        (unsafe { *afe_config }).aec_init = false;
+        (unsafe { *afe_config }).aec_init = true;
         (unsafe { *afe_config }).vad_init = false;
 
         // afe_iface_ = esp_afe_handle_from_config(afe_config);
@@ -226,7 +226,7 @@ impl AfeAudioProcessor {
         }));
         let cond = Arc::new(Condvar::new());
 
-        let input_channels = codec.lock().unwrap().input_channels() as usize;
+        // let input_channels = codec.lock().unwrap().input_channels() as usize;
 
         let mut processor = Self {
             codec: codec,
@@ -236,10 +236,10 @@ impl AfeAudioProcessor {
             afe_iface: SendPtr(afe_iface as *mut _), // iface 通常是 const，强转一下存起来
             state: state.clone(),
             cond: cond.clone(),
-            input_channels,
+            input_channels: input_channels as usize,
         };
 
-        info!("New iface ptr: {:p}", afe_iface); // 在 new 里
+        // info!("New iface ptr: {:p}", afe_iface); // 在 new 里
 
         processor.audio_processor_task();
         info!("Initialized AfeAudioProcessor");
@@ -269,7 +269,7 @@ impl AfeAudioProcessor {
                 );
 
                 loop {
-                    info!("in task closure! 阶段 1: 等待运行信号 ");
+                    // info!("in task closure! 阶段 1: 等待运行信号 ");
                     // --- 阶段 1: 等待运行信号 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
@@ -279,12 +279,12 @@ impl AfeAudioProcessor {
                         state_guard = cond_clone.wait(state_guard).unwrap();
                     }
 
-                    info!("阶段 2: 释放锁，执行耗时操作");
+                    // info!("阶段 2: 释放锁，执行耗时操作");
                     // --- 阶段 2: 释放锁，执行耗时操作 ---
                     // 必须释放锁，否则主线程调用 stop() 时会死锁
                     drop(state_guard);
 
-                    info!("调用 C 函数获取音频数据");
+                    // info!("调用 C 函数获取音频数据");
                     // 调用 C 函数获取音频数据
                     // portMAX_DELAY 在 Rust 中对应 u32::MAX
                     let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
@@ -295,10 +295,10 @@ impl AfeAudioProcessor {
                         }
                         continue;
                     }
-                    info!("已经取到 res");
+                    // info!("已经取到 res");
                     // continue;
 
-                    info!("阶段 3: 重新获取锁处理结果");
+                    // info!("阶段 3: 重新获取锁处理结果");
                     // --- 阶段 3: 重新获取锁处理结果 ---
                     let mut state_guard = state_clone.lock().unwrap();
 
@@ -307,7 +307,7 @@ impl AfeAudioProcessor {
                         continue;
                     }
 
-                    info!("阶段 4: 处理回调");
+                    // info!("阶段 4: 处理回调");
                     // --- 阶段 4: 处理回调 ---
 
                     // VAD (语音活动检测) 状态变化
@@ -322,7 +322,7 @@ impl AfeAudioProcessor {
                         vad_event = Some(false); // 需要触发"停止说话"
                     }
 
-                    info!("已经取到 vad_event");
+                    // info!("已经取到 vad_event");
                     // 2. 如果有事件发生，再获取回调函数进行调用
                     // 此时上面的逻辑已经结束，state_guard 的借用已经释放，可以再次借用
                     if let Some(is_speaking) = vad_event {
@@ -334,7 +334,7 @@ impl AfeAudioProcessor {
 
                     // 输出音频数据
                     if let Some(ref mut out_cb) = state_guard.output_callback {
-                        info!("输出音频数据");
+                        // info!("输出音频数据");
                         let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
                         // 从 C 指针创建切片，然后转为 Vec (发生内存拷贝)
                         let data_slice =
@@ -389,10 +389,10 @@ impl AudioProcessor for AfeAudioProcessor {
 
         unsafe {
             // 检查函数指针并调用
-            info!(
-                "feed audio data, data_ptr: {:?}, data: {:?}",
-                data_ptr, data
-            );
+            // info!(
+            //     "feed audio data, data_ptr: {:?}, data: {:?}",
+            //     data_ptr, data
+            // );
             if let Some(feed_func) = (*iface_ptr).feed {
                 // info!("feed_func: {:?}", feed_func);
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
@@ -432,11 +432,15 @@ impl AudioProcessor for AfeAudioProcessor {
     }
 
     fn get_feed_size(&self) -> usize {
-        unsafe {
+        let feed_chunksize = unsafe {
             ((*self.afe_iface.as_ptr()).get_feed_chunksize.unwrap())(self.afe_data.as_ptr())
                 as usize
-                * self.input_channels
-        }
+        };
+        info!(
+            "feed_chunksize: {} , input_channels: {}",
+            feed_chunksize, self.input_channels
+        );
+        feed_chunksize * self.input_channels
     }
 
     fn enable_device_aec(&mut self, enable: bool) {

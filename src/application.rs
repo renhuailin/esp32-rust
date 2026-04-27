@@ -467,7 +467,7 @@ impl Application {
             .unwrap()
             .on_output(Box::new(move |data| {
                 // info!("on audio processor output,data length: {}", data.len());
-                info!("on audio processor output data: {:?}", data);
+                // info!("on audio processor output data: {:?}", data);
 
                 // 发送到编码线程,编码成opus.
                 if let Err(e) = pcm_tx.send(data) {
@@ -1421,8 +1421,6 @@ fn start_audio_input(
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
 
-        info!(" read data from codec es7210, bytes_read: {}", bytes_read);
-
         if bytes_read > 0 {
             let audio_data = &read_buffer[..bytes_read];
 
@@ -1436,6 +1434,16 @@ fn start_audio_input(
             // let start = Instant::now();
             let bytes_to_i16_result = bytes_to_i16_slice(&audio_data).unwrap();
 
+            // 1. 创建一个干净的单声道缓冲区
+            // 容量是原来的一半
+            let mut mono_samples = Vec::with_capacity(bytes_to_i16_result.len() / 2);
+
+            // 2. 剔除那些全是 0 的奇数通道 (索引 1, 3, 5...)
+            // 只保留有声音的通道 0 (索引 0, 2, 4...)
+            for i in (0..bytes_to_i16_result.len()).step_by(2) {
+                mono_samples.push(bytes_to_i16_result[i]);
+            }
+
             // let duration = start.elapsed();
             // info!("数据转换 耗时: {:?}", duration);
             // info!("application: feed data to audio processor");
@@ -1443,19 +1451,25 @@ fn start_audio_input(
             // info!("真正喂进去的 i16 长度: {}", bytes_to_i16_result.len());
 
             // 打印最大振幅，以调试es7210的输出音量
-            let max_val = bytes_to_i16_result
+            let max_val = mono_samples
                 .iter()
                 .map(|&x| if x == i16::MIN { 32767 } else { x.abs() })
                 .max()
                 .unwrap_or(0);
+            info!(
+                "首几个样本: [{}, {}, {}, {}]",
+                mono_samples[0], mono_samples[1], mono_samples[2], mono_samples[3]
+            );
+            info!("音频数据最大振幅: {}", max_val);
             if max_val >= 10000 && max_val <= 28000 {
+                info!(" read data from codec es7210, bytes_read: {}", bytes_read);
                 info!("检测到合理的音频数据: {}", max_val);
             }
 
             // // 3. 再次获取锁进行 feed
             // // 此时 codec 的锁已经释放了，避免交叉死锁
             // let start = Instant::now();
-            audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
+            audio_processor.lock().unwrap().feed(&mono_samples);
             // let duration = start.elapsed();
             // info!("Feed 数据 耗时: {:?}", duration);
         }

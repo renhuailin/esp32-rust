@@ -467,6 +467,8 @@ impl Application {
             .unwrap()
             .on_output(Box::new(move |data| {
                 // info!("on audio processor output,data length: {}", data.len());
+                info!("on audio processor output data: {:?}", data);
+
                 // 发送到编码线程,编码成opus.
                 if let Err(e) = pcm_tx.send(data) {
                     // 如果发送失败（比如编码线程挂了），打印个日志，不要 panic

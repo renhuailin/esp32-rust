@@ -634,6 +634,8 @@ where
     }
 
     fn dump_regs(&mut self) -> Result<(), anyhow::Error> {
+        return Ok(());
+
         // audio_codec_es7210_t *codec = (audio_codec_es7210_t *)h;
         // if (codec == NULL)
         // {

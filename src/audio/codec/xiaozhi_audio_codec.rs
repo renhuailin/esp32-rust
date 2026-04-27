@@ -62,8 +62,7 @@ impl XiaozhiAudioCodec {
                 // return Err(anyhow!("初始化es7210失败:{:?}", e));
             }
         }
-        let input_reference = false;
-        // let input_channels = input_reference ? 2 : 1;
+        let input_reference = true;
 
         //一共就两个channels,只有input_reference时才会使用两个channels，而且要是全双工的才行。
         let input_channels = if input_reference { 2 } else { 1 };

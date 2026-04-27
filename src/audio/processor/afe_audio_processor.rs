@@ -374,11 +374,6 @@ impl AudioProcessor for AfeAudioProcessor {
     fn initialize(&mut self) {}
 
     fn feed(&mut self, data: &[i16]) {
-        // 移除不必要的日志输出以减少栈使用
-        // info!("feed audio data!");
-
-        // thread::sleep(Duration::from_millis(1000 * 2));
-
         if data.is_empty() {
             return;
         }
@@ -401,7 +396,7 @@ impl AudioProcessor for AfeAudioProcessor {
             if let Some(feed_func) = (*iface_ptr).feed {
                 // info!("feed_func: {:?}", feed_func);
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
-                info!("Feed returned : {}", ret);
+                // info!("Feed returned : {}", ret);
                 // if ret != 0 {
                 //     // 只在错误时输出日志
                 //     info!("Feed returned error: {}", ret);
@@ -410,7 +405,7 @@ impl AudioProcessor for AfeAudioProcessor {
                 error!("Critical: AFE feed function pointer is null!");
             }
         }
-        info!("feed audio data end!");
+        // info!("feed audio data end!");
     }
 
     fn start(&mut self) {

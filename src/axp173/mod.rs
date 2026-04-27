@@ -20,6 +20,7 @@ mod units;
 pub use adc::AdcSettings;
 pub use irq::Irq;
 pub use ldo::{Ldo, LdoKind};
+use log::info;
 pub use pek::{BootTime, LongPressTime, ShutdownLongPressTime};
 use regs::*;
 pub use regs::{AdcSampleRate, ChargingCurrent, ChargingVoltage, TsPinMode};
@@ -71,14 +72,15 @@ where
     pub fn init(&mut self) -> OperationResult<E> {
         self.write_u8(0x12, 0b00000111).map_err(Error::I2c)?; // REG 12H: 电源输出控制 7保留/6EXTEN关闭/5保留/4 DC-DC2关闭/3 LDO3关闭/2 LDO2开启/1 LDO4开启/0 DC-DC1开启
         let v: u16 = (3300 - 700) / 25;
-        println!("DC-DC1输出电压设置: {:08b}", v);
+        info!("DC-DC1输出电压设置: {:08b}", v);
         self.write_u8(0x26, v as u8).map_err(Error::I2c)?; // REG 26H: DC-DC1输出电压设置 7-6保留/6-0 Bit6-Bit0 3.3V
         self.write_u8(0x27, v as u8).map_err(Error::I2c)?; // REG 27H: LDO4输出电压设置  7-6保留/6-0 Bit6-Bit0 3.3V
         self.write_u8(0x28, 0b10101010).map_err(Error::I2c)?; // REG 28H: LDO23输出电压设置2.8V
         self.write_u8(0x33, 0b11000100).map_err(Error::I2c)?; // REG 33H: 充电控制1 4.2V 450mA
         self.write_u8(0x36, 0b01101100).map_err(Error::I2c)?; // REG 36H: PEK按键参数设置短按开机，长按4s关机
-                                                              //self.write_u8(0x10, 0b00000000);        // REG 10H: EXTEN 做为音频使能控制，初始时关闭
-                                                              //写一遍默认值避免遇到定制芯片
+
+        //self.write_u8(0x10, 0b00000000);        // REG 10H: EXTEN 做为音频使能控制，初始时关闭
+        //写一遍默认值避免遇到定制芯片
         self.write_u8(0x30, 0b01001000).map_err(Error::I2c)?; // REG 30H: VBUS-IPSOUT通路管理
         self.write_u8(0x31, 0b00000001).map_err(Error::I2c)?; // REG 31H: VOFF关机电压设置2.7V
         self.write_u8(0x32, 0b01000000).map_err(Error::I2c)?; // REG 32H: 关机设置、电池检测以及CHGLED管脚控制
@@ -119,7 +121,7 @@ where
         }
 
         bit = self.read_u8(POWER_EXTEN_REG_10).map_err(Error::I2c)?;
-        println!("AXP 173 POWER_EXTEN_REG_10={:08b}", bit);
+        info!("AXP 173 POWER_EXTEN_REG_10={:08b}", bit);
         Ok(())
     }
 
@@ -177,6 +179,32 @@ where
     /// Disables selected LDO.
     pub fn disable_ldo(&mut self, ldo: &LdoKind) -> OperationResult<E> {
         self.switch_ldo(ldo, false)
+    }
+
+    fn dump_regs(&mut self) -> Result<(), E> {
+        // return Ok(());
+
+        // audio_codec_es7210_t *codec = (audio_codec_es7210_t *)h;
+        // if (codec == NULL)
+        // {
+        //     return;
+        // }
+        // for (int i = 0; i <= 0x4E; i++)
+        // {
+        //     int reg = 0;
+        //     if (es7210_read_reg(codec, i, &reg) != ESP_CODEC_DEV_OK)
+        //     {
+        //         break;
+        //     }
+        //     ESP_LOGI(TAG, "REG_%02x: 0x%02X", i, reg);
+        // }
+
+        for i in 0..=0x4E {
+            let reg: u8 = self.read_u8(i as u8)?;
+            info!(target: "Axp173", "REG_{:02X}: 0x{:02X}", i, reg);
+        }
+
+        Ok(())
     }
 
     fn switch_ldo(&mut self, ldo: &LdoKind, enable: bool) -> OperationResult<E> {

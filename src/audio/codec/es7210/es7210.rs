@@ -39,11 +39,11 @@ where
             is_open: false,
             enabled: false,
             clock_off_status: 0,
-            input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
-            // input_mics: ES7210_INPUT_MIC1
-            //     | ES7210_INPUT_MIC2
-            //     | ES7210_INPUT_MIC3
-            //     | ES7210_INPUT_MIC4,
+            // input_mics: ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2,
+            input_mics: ES7210_INPUT_MIC1
+                | ES7210_INPUT_MIC2
+                | ES7210_INPUT_MIC3
+                | ES7210_INPUT_MIC4,
         }
     }
 
@@ -157,7 +157,7 @@ where
         // ret |= es7210_write_reg(codec, ES7210_ANALOG_REG40, 0xc0);
         // ret |= es7210_write_reg(codec, ES7210_CLOCK_OFF_REG01, 0x7f);
         // ret |= es7210_write_reg(codec, ES7210_POWER_DOWN_REG06, 0x07);
-
+        info!("es7210 stopped!!!");
         self.write_reg(ES7210_MIC1_POWER_REG_47, 0xff)?;
         self.write_reg(ES7210_MIC2_POWER_REG_48, 0xff)?;
         self.write_reg(ES7210_MIC3_POWER_REG_49, 0xff)?;
@@ -173,7 +173,8 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0x0F, 30.0)?;
+        self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
+        self.set_channel_gain(self.input_mics, 0x0F, 36.0)?;
 
         self.enabled = true;
 
@@ -355,9 +356,10 @@ where
             if (input_mics & ES7210_INPUT_MIC1) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC1");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
-                                                                           //turn on master clock
-                                                                           //turn on ADC12 analog clock
-                                                                           //turn on ADC12 master clock
+
+                //turn on master clock
+                //turn on ADC12 analog clock
+                //turn on ADC12 master clock
                 self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?; //打开mic1,mic2的电源
                 self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x10, 0x10)?;
                 self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x0f, 0)?;
@@ -366,9 +368,10 @@ where
             if (input_mics & ES7210_INPUT_MIC2) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC2");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
-                                                                           //turn on master clock
-                                                                           //turn on ADC12 analog clock
-                                                                           //turn on ADC12 master clock
+
+                //turn on master clock
+                //turn on ADC12 analog clock
+                //turn on ADC12 master clock
                 self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?; //打开mic1,mic2的电源
                 self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x10, 0x10)?;
                 self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x0f, 0)?;
@@ -379,9 +382,10 @@ where
                 // ret |= es7210_update_reg_bit(codec, ES7210_CLOCK_OFF_REG01, 0x15, 0x00);
                 // ret |= es7210_write_reg(codec, ES7210_MIC34_POWER_REG4C, 0x00);
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
-                                                                           //turn on master clock
-                                                                           //turn on ADC34 analog clock
-                                                                           //turn on ADC34 master clock
+
+                //turn on master clock
+                //turn on ADC34 analog clock
+                //turn on ADC34 master clock
                 self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?; //打开MIC3/4的电源
                 self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x10, 0x10)?;
                 self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x0f, 0)?;
@@ -390,9 +394,10 @@ where
             if (input_mics & ES7210_INPUT_MIC4) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC4");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
-                                                                           //turn on master clock
-                                                                           //turn on ADC34 analog clock
-                                                                           //turn on ADC34 master clock
+
+                //turn on master clock
+                //turn on ADC34 analog clock
+                //turn on ADC34 master clock
                 self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?; //打开MIC3/4的电源
                 self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x10, 0x10)?;
                 self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x0f, 0)?;

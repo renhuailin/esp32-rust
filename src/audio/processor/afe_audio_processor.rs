@@ -203,7 +203,7 @@ impl AfeAudioProcessor {
         // #endif
 
         // TODO:: AEC相关
-        (unsafe { *afe_config }).aec_init = false;
+        (unsafe { *afe_config }).aec_init = true;
         (unsafe { *afe_config }).vad_init = false;
 
         // afe_iface_ = esp_afe_handle_from_config(afe_config);
@@ -376,7 +376,7 @@ impl AudioProcessor for AfeAudioProcessor {
         // 移除不必要的日志输出以减少栈使用
         // info!("feed audio data!");
 
-        thread::sleep(Duration::from_millis(1000 * 2));
+        // thread::sleep(Duration::from_millis(1000 * 2));
 
         if data.is_empty() {
             return;

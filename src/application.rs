@@ -279,12 +279,12 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
-        //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(
-            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        ));
+        // //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
+        // let audio_processor = Arc::new(Mutex::new(
+        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        // ));
 
-        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -402,7 +402,7 @@ impl Application {
                 for pcm_data in pcm_rx {
                     // 在这里做编码，环境单纯，没有锁竞争
                     // 打印数据长度，排查问题
-                    // info!("Encoding frame size: {}", pcm_data.len());
+                    info!("Encoding frame size: {}", pcm_data.len());
 
                     let inner_sender1 = inner_sender.clone();
                     let encoder = Arc::clone(&opus_encoder);

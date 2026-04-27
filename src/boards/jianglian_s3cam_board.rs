@@ -219,11 +219,11 @@ impl JiangLianS3CamBoard {
     }
 
     fn wifi_scan(&mut self) -> Result<()> {
-        // let ssid = "CU_liu81802";
-        // let password = "china-ops";
+        let ssid = "CU_liu81802";
+        let password = "china-ops";
 
-        let ssid = "1802";
-        let password = "20250101";
+        // let ssid = "1802";
+        // let password = "20250101";
 
         self.wifi_driver.connect(ssid, password)?;
         Ok(())

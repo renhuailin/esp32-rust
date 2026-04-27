@@ -280,11 +280,11 @@ impl Application {
         ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        // let audio_processor = Arc::new(Mutex::new(
-        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        // ));
+        let audio_processor = Arc::new(Mutex::new(
+            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        ));
 
-        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 

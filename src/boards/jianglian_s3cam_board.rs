@@ -129,26 +129,27 @@ impl JiangLianS3CamBoard {
         let ws = pins.gpio40;
 
         // i2s_config
-        let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
-            peripherals.i2s0,
-            &std_config,
-            bclk,
-            din,
-            dout,
-            Some(mclk),
-            ws,
-        )
-        .unwrap();
-
-        // let i2s_driver = MixedI2sDriver::new(
-        //     16000,
-        //     mclk.pin(),
-        //     bclk.pin(),
-        //     ws.pin(),
-        //     dout.pin(),
-        //     din.pin(),
+        // let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+        //     peripherals.i2s0,
+        //     &std_config,
+        //     bclk,
+        //     din,
+        //     dout,
+        //     Some(mclk),
+        //     ws,
         // )
         // .unwrap();
+
+        let i2s_driver = MixedI2sDriver::new(
+            16000,
+            mclk.pin(),
+            bclk.pin(),
+            ws.pin(),
+            dout.pin(),
+            din.pin(),
+            4,
+        )
+        .unwrap();
 
         let audio_codec = XiaozhiAudioCodec::new(es8311_i2c_proxy, es7210_i2c_proxy, i2s_driver);
 

@@ -476,25 +476,6 @@ impl Application {
                 }
             }));
 
-        // // 启动一个线程来读取音频数据
-        // ThreadSpawnConfiguration {
-        //     name: Some(b"audio_loop\0"),
-        //     stack_size: 4096 * 2,
-        //     priority: 5,
-        //     pin_to_core: Some(1.into()), // 绑定到 Core 1
-
-        //     // 关键点：虽然这里没有直接的 "stack_in_psram" 字段，
-        //     // 但我们可以通过设置 inherit 为 false 来避免继承父线程的配置
-        //     inherit: false,
-        //     ..Default::default()
-        // }
-        // .set()
-        // .unwrap();
-        // let _ = thread::spawn(move || {
-        //     audio_loop(codec_clone, audio_processor);
-        // });
-        // ThreadSpawnConfiguration::default().set().unwrap();
-
         let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
             audio_loop(codec_clone, audio_processor);
         });
@@ -507,7 +488,8 @@ impl Application {
             let res = esp_idf_sys::xTaskCreatePinnedToCore(
                 Some(c_task_trampoline),
                 b"audio_loop\0".as_ptr() as *const u8,
-                4096 * 2,
+                // 4096 * 3,
+                16 * 1024,
                 closure_ptr as *mut c_void,
                 8,
                 ptr::null_mut(),
@@ -1439,10 +1421,7 @@ fn start_audio_input(
         // let duration = start.elapsed();
         // info!("从codec读取音频数据 耗时: {:?}", duration);
 
-        // info!(
-        //     "application: read data from codec es7210, bytes_read: {}",
-        //     bytes_read
-        // );
+        info!(" read data from codec es7210, bytes_read: {}", bytes_read);
 
         if bytes_read > 0 {
             let audio_data = &read_buffer[..bytes_read];

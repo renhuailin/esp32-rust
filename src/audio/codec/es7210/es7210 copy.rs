@@ -1,7 +1,8 @@
-use crate::audio::codec::es7210::enums::MicGain;
 use crate::audio::codec::es7210::reg::*;
+use crate::audio::codec::{es7210::enums::MicGain, types::CodecSampleInfo};
+use crate::common::enums::I2SFormat;
 use crate::utils::bits::update_bit;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use embedded_hal::blocking::i2c::{Write, WriteRead};
 use esp_idf_hal::i2c::I2cError;
 use log::info;
@@ -26,6 +27,7 @@ pub struct Es7210<I2C> {
     enabled: bool,
     clock_off_status: u8,
     input_mics: u8,
+    work_in_master_mode: bool,
 }
 
 impl<I2C> Es7210<I2C>
@@ -44,6 +46,7 @@ where
             //     | ES7210_INPUT_MIC2
             //     | ES7210_INPUT_MIC3
             //     | ES7210_INPUT_MIC4,
+            work_in_master_mode: false,
         }
     }
 
@@ -97,9 +100,12 @@ where
                                                       // 6: 1 – use clock doubler 0 – not use clock doubler;
                                                       // 5: Reserved
                                                       // 4:0 ADC clock divide 0/1 – no divide 2 – divide by 2
+        info!(target:"ES7210", "dump regs in open");
+        self.dump_regs().unwrap();
 
         self.mic_select(self.input_mics)?;
         self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_mute(false)?;
 
         //把clcok off的设置保存起来,在enbale的时候需要用到。
         self.clock_off_status = self.read_reg(ES7210_CLOCK_OFF_REG_01)?;
@@ -144,6 +150,9 @@ where
         self.write_reg(ES7210_RESET_REG_00, 0x71)?; // 0x71=0b01110001
         self.write_reg(ES7210_RESET_REG_00, 0x41)?; //0x41=01000001b reset master mode LRCK and SCLK, and enable Chip state machine power down
 
+        info!("dump regs at the end of  start");
+        self.dump_regs().unwrap();
+
         Ok(())
     }
 
@@ -172,17 +181,38 @@ where
     }
 
     pub fn enable(&mut self) -> Result<(), Error> {
-        self.start()?;
-        self.set_channel_gain(self.input_mics, 0x01, 30.0)?;
+        // if self.is_enabled() {
+        //     return Ok(());
+        // }
 
+        // esp_codec_dev_sample_info_t fs = {
+        //     .bits_per_sample = 16,
+        //     .channel = 4,
+        //     .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
+        //     .sample_rate = (uint32_t)output_sample_rate_,
+        //     .mclk_multiple = 0,
+        // };
+        // if (input_reference_) {
+        //     fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
+        // }
+        self.start()?;
+        self.set_channel_gain(0x01, 0xF, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_mute(false)?;
         self.enabled = true;
+
+        self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
+
+        info!("dump regs at the end of  enable");
+        self.dump_regs().unwrap();
 
         Ok(())
     }
 
     pub fn disable(&mut self) -> Result<(), Error> {
-        self.stop()?;
         self.enabled = false;
+        self.stop()?;
+        self.set_mute(true)?;
         Ok(())
     }
 
@@ -192,6 +222,38 @@ where
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn set_mute(&mut self, mute: bool) -> Result<(), Error> {
+        // if self.is_open {
+        //     return Ok(());
+        // }
+
+        // if (mute)
+        // {
+        //     ret |= es7210_update_reg_bit(codec, 0x14, 0x03, 0x03);
+        //     ret |= es7210_update_reg_bit(codec, 0x15, 0x03, 0x03);
+        // }
+        // else
+        // {
+        //     ret |= es7210_update_reg_bit(codec, 0x14, 0x03, 0x00);
+        //     ret |= es7210_update_reg_bit(codec, 0x15, 0x03, 0x00);
+        // }
+
+        if mute {
+            // ES7210_ADC12_MUTE_CONTROL_REG_15
+            self.update_reg_bit(ES7210_ADC34_MUTE_CONTROL_REG_14, 0x03, 0x03)?;
+            self.update_reg_bit(ES7210_ADC12_MUTE_CONTROL_REG_15, 0x03, 0x03)?;
+        } else {
+            self.update_reg_bit(ES7210_ADC34_MUTE_CONTROL_REG_14, 0x03, 0x00)?;
+            self.update_reg_bit(ES7210_ADC12_MUTE_CONTROL_REG_15, 0x03, 0x00)?;
+        }
+        // ESP_LOGI(TAG, "%s", mute ? "Muted" : "Unmuted");
+        info!("{}", if mute { "Muted" } else { "Unmuted" });
+
+        self.dump_regs().unwrap();
+
+        std::result::Result::Ok(())
     }
 
     pub fn is_tdm_mode(&self) -> bool {
@@ -205,7 +267,7 @@ where
         // }
         // return (mic_num >= ENABLE_TDM_MAX_NUM);
 
-        return false; //我先用std channel来测试。
+        return true;
 
         // let mut mic_num = 0;
         // for i in 1..=4 {
@@ -215,6 +277,48 @@ where
         // }
         // return mic_num >= ENABLE_TDM_MAX_NUM;
     }
+
+    pub fn set_fs(&mut self, mut fs: CodecSampleInfo) -> Result<(), anyhow::Error> {
+        // int ret = 0;
+        // uint8_t bits = fs->bits_per_sample;
+        // // Use 2 channel to fetch TDM data
+        // if (es7210_is_tdm_mode(codec) && fs->channel <= 2 && fs->channel_mask == 0)
+        // {
+        //     bits >>= 1;
+        // }
+        // ret |= es7210_set_bits(codec, bits);
+        // ret |= es7210_config_sample(codec, fs->sample_rate);
+        // ret |= es7210_config_fmt(codec, ES_I2S_NORMAL);
+        // return ret == 0 ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;
+        if !self.is_open {
+            return Err(anyhow!("ES7210 is in wrong state"));
+        }
+
+        if self.is_tdm_mode() && fs.channel <= 2 && fs.channel_mask == 0 {
+            fs.bits_per_sample >>= 1;
+        }
+
+        self.set_bits(fs.bits_per_sample)?;
+        if self.work_in_master_mode {
+            self.config_sample(fs.sample_rate)?;
+        }
+
+        self.config_format(I2SFormat::Normal)?;
+
+        return Ok(());
+    }
+
+    /// Reads a single byte from a register.
+    pub fn read_reg(&mut self, reg: u8) -> Result<u8, Error> {
+        let mut byte: [u8; 1] = [0; 1];
+
+        match self.i2c.write_read(ADDR, &[reg], &mut byte) {
+            Ok(_) => Ok(byte[0]),
+            Err(e) => Err(Error::I2c(e)),
+        }
+    }
+
+    //-------- private methods --------
 
     /// 设置工作模式为master
     /// 参数：
@@ -237,6 +341,7 @@ where
         //     ESP_LOGI(TAG, "Work in Slave mode");
         //     ret |= es7210_update_reg_bit(codec, ES7210_MODE_CONFIG_REG08, 0x01, 0x00);
         // }
+        self.work_in_master_mode = master_mode;
 
         let mut regv = self.read_reg(ES7210_MODE_CONFIG_REG_08)?;
         if master_mode {
@@ -248,16 +353,6 @@ where
         }
         self.write_reg(ES7210_MODE_CONFIG_REG_08, regv)?;
         Ok(())
-    }
-
-    /// Reads a single byte from a register.
-    pub fn read_reg(&mut self, reg: u8) -> Result<u8, Error> {
-        let mut byte: [u8; 1] = [0; 1];
-
-        match self.i2c.write_read(ADDR, &[reg], &mut byte) {
-            Ok(_) => Ok(byte[0]),
-            Err(e) => Err(Error::I2c(e)),
-        }
     }
 
     //private methods
@@ -343,6 +438,9 @@ where
             self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x10, 0x00)?;
             self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x10, 0x00)?;
 
+            self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0xff)?;
+            self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0xff)?;
+
             // if (codec->mic_select & ES7210_INPUT_MIC1)
             // {
             //     ESP_LOGI(TAG, "Enable ES7210_INPUT_MIC1");
@@ -355,23 +453,25 @@ where
             if (input_mics & ES7210_INPUT_MIC1) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC1");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
-                                                                           //turn on master clock
-                                                                           //turn on ADC12 analog clock
-                                                                           //turn on ADC12 master clock
-                self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?; //打开mic1,mic2的电源
+
+                self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?;
+                //turn on master clock
+                //turn on ADC12 analog clock
+                //turn on ADC12 master clock
+
                 self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x10, 0x10)?;
-                self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x0f, 0)?;
+                self.update_reg_bit(ES7210_MIC1_GAIN_REG_43, 0x0f, 0x00)?;
             }
 
             if (input_mics & ES7210_INPUT_MIC2) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC2");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x0b, 0x00)?; //0x0b=0b1011,
-                                                                           //turn on master clock
-                                                                           //turn on ADC12 analog clock
-                                                                           //turn on ADC12 master clock
-                self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?; //打开mic1,mic2的电源
+                self.write_reg(ES7210_MIC12_POWER_DOWN_REG_4B, 0x00)?;
+                //turn on master clock
+                //turn on ADC12 analog clock
+                //turn on ADC12 master clock
                 self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x10, 0x10)?;
-                self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x0f, 0)?;
+                self.update_reg_bit(ES7210_MIC2_GAIN_REG_44, 0x0f, 0x00)?;
             }
 
             if (input_mics & ES7210_INPUT_MIC3) != 0 {
@@ -379,23 +479,24 @@ where
                 // ret |= es7210_update_reg_bit(codec, ES7210_CLOCK_OFF_REG01, 0x15, 0x00);
                 // ret |= es7210_write_reg(codec, ES7210_MIC34_POWER_REG4C, 0x00);
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
-                                                                           //turn on master clock
-                                                                           //turn on ADC34 analog clock
-                                                                           //turn on ADC34 master clock
-                self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?; //打开MIC3/4的电源
+
+                self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?;
+                //turn on master clock
+                //turn on ADC34 analog clock
+                //turn on ADC34 master clock
                 self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x10, 0x10)?;
-                self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x0f, 0)?;
+                self.update_reg_bit(ES7210_MIC3_GAIN_REG_45, 0x0f, 0x00)?;
             }
 
             if (input_mics & ES7210_INPUT_MIC4) != 0 {
                 info!(target: "ES7210", "Enable ES7210_INPUT_MIC4");
                 self.update_reg_bit(ES7210_CLOCK_OFF_REG_01, 0x15, 0x00)?; //0x15=0b00010101
-                                                                           //turn on master clock
-                                                                           //turn on ADC34 analog clock
-                                                                           //turn on ADC34 master clock
-                self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?; //打开MIC3/4的电源
+                self.write_reg(ES7210_MIC34_POWER_DOWN_REG_4C, 0x00)?;
+                //turn on master clock
+                //turn on ADC34 analog clock
+                //turn on ADC34 master clock
                 self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x10, 0x10)?;
-                self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x0f, 0)?;
+                self.update_reg_bit(ES7210_MIC4_GAIN_REG_46, 0x0f, 0x00)?;
             }
         } else {
             return Err(Error::InvalidMicInputMode);
@@ -429,6 +530,133 @@ where
         regv = update_bit(regv, update_bits, data);
 
         self.write_reg(reg_addr, regv)?;
+        Ok(())
+    }
+
+    fn set_bits(&mut self, bits: u8) -> Result<(), anyhow::Error> {
+        // int adc_iface = 0;
+        // ret = es7210_read_reg(codec, ES7210_SDP_INTERFACE1_REG11, &adc_iface);
+        // adc_iface &= 0x1f;
+        // switch (bits)
+        // {
+        // case 16:
+        //     adc_iface |= 0x60;
+        //     break;
+        // case 24:
+        //     adc_iface |= 0x00;
+        //     break;
+        // case 32:
+        //     adc_iface |= 0x80;
+        //     break;
+        // default:
+        //     adc_iface |= 0x60;
+        //     break;
+        // }
+        // ret |= es7210_write_reg(codec, ES7210_SDP_INTERFACE1_REG11, adc_iface);
+        // ESP_LOGI(TAG, "Bits %d", bits);
+
+        let mut adc_iface: u8 = self.read_reg(ES7210_SDP_INTERFACE1_REG_11)?;
+        adc_iface &= 0x1f;
+        match bits {
+            16 => adc_iface |= 0x60,
+            24 => adc_iface |= 0x00,
+            32 => adc_iface |= 0x80,
+            _ => adc_iface |= 0x60,
+        }
+        self.write_reg(ES7210_SDP_INTERFACE1_REG_11, adc_iface)?;
+        info!(target: "ES7210", "Bits {}", bits);
+
+        Ok(())
+    }
+
+    ///不工作在master mode 下，所以这里不做任何处理
+    fn config_sample(&mut self, _sample_rate: u32) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
+
+    fn config_format(&mut self, format: I2SFormat) -> Result<(), anyhow::Error> {
+        // int ret = 0;
+        // int adc_iface = 0;
+        // ret = es7210_read_reg(codec, ES7210_SDP_INTERFACE1_REG11, &adc_iface);
+        // adc_iface &= 0xfc;
+        // switch (fmt)
+        // {
+        // case ES_I2S_NORMAL:
+        //     ESP_LOGD(TAG, "ES7210 in I2S Format");
+        //     adc_iface |= 0x00;
+        //     break;
+        // case ES_I2S_LEFT:
+        // case ES_I2S_RIGHT:
+        //     ESP_LOGD(TAG, "ES7210 in LJ Format");
+        //     adc_iface |= 0x01;
+        //     break;
+        // case ES_I2S_DSP:
+        //     if (I2S_DSP_MODE)
+        //     {
+        //         ESP_LOGD(TAG, "ES7210 in DSP-A Format");
+        //         adc_iface |= 0x13;
+        //     }
+        //     else
+        //     {
+        //         ESP_LOGD(TAG, "ES7210 in DSP-B Format");
+        //         adc_iface |= 0x03;
+        //     }
+        //     break;
+        // default:
+        //     ESP_LOGD(TAG, "ES7210 in default Format");
+        //     adc_iface &= 0xfc;
+        //     break;
+        // }
+        // ret |= es7210_write_reg(codec, ES7210_SDP_INTERFACE1_REG11, adc_iface);
+        // return ret;
+        let mut adc_iface = self.read_reg(ES7210_SDP_INTERFACE1_REG_11)?;
+        adc_iface &= 0xfc;
+        match format {
+            I2SFormat::Normal => {
+                info!(target: "ES7210", "ES7210 in I2S Format");
+                adc_iface |= 0x00;
+            }
+            I2SFormat::Left => {
+                info!(target: "ES7210", "ES7210 in LJ Format");
+                adc_iface |= 0x01;
+            }
+            I2SFormat::Right => {
+                info!(target: "ES7210", "ES7210 in LJ Format");
+                adc_iface |= 0x01;
+            }
+            I2SFormat::DSP => {}
+            _ => {
+                adc_iface &= 0xfc;
+            }
+        }
+        self.write_reg(ES7210_SDP_INTERFACE1_REG_11, adc_iface)?;
+        // info!(target: "ES7210", "ES7210 in {:?} Format", format);
+        Ok(())
+    }
+
+    fn dump_regs(&mut self) -> Result<(), anyhow::Error> {
+        return Ok(());
+
+        // audio_codec_es7210_t *codec = (audio_codec_es7210_t *)h;
+        // if (codec == NULL)
+        // {
+        //     return;
+        // }
+        // for (int i = 0; i <= 0x4E; i++)
+        // {
+        //     int reg = 0;
+        //     if (es7210_read_reg(codec, i, &reg) != ESP_CODEC_DEV_OK)
+        //     {
+        //         break;
+        //     }
+        //     ESP_LOGI(TAG, "REG_%02x: 0x%02X", i, reg);
+        // }
+
+        for i in 0..=0x4E {
+            let reg: u8 = self.read_reg(i as u8)?;
+            info!(target: "ES7210", "REG_{:02X}: 0x{:02X}", i, reg);
+        }
+
         Ok(())
     }
 }

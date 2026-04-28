@@ -24,9 +24,8 @@ pub struct XiaozhiAudioCodec {
     input_enabled: bool,
     output_enabled: bool,
     output_volume: u8,
-    // i2s_driver: Arc<Mutex<I2sDriver<'static, I2sBiDir>>>,
-    i2s_driver: Arc<Mutex<MixedI2sDriver>>,
-
+    i2s_driver: Arc<Mutex<I2sDriver<'static, I2sBiDir>>>,
+    // i2s_driver: Arc<Mutex<MixedI2sDriver>>,
     input_reference: bool,
     input_channels: i32,
 }
@@ -35,8 +34,8 @@ impl XiaozhiAudioCodec {
     pub fn new(
         es8311_i2c_proxy: I2cProxy,
         es7210_i2c_proxy: I2cProxy,
-        // i2s_driver: I2sDriver<'static, I2sBiDir>,
-        i2s_driver: MixedI2sDriver,
+        i2s_driver: I2sDriver<'static, I2sBiDir>,
+        // i2s_driver: MixedI2sDriver,
     ) -> Self {
         let mut es8311 = Es8311::new(es8311_i2c_proxy);
         let mut delay = Delay::new_default();
@@ -102,7 +101,7 @@ impl AudioCodec for XiaozhiAudioCodec {
             if self.input_reference {
                 fs.channel_mask |= make_channel_mask(1) as u16;
             }
-            self.input_codec.set_fs(fs)?;
+            // self.input_codec.set_fs(fs)?;
 
             self.input_codec.enable()?;
         } else {
@@ -149,6 +148,7 @@ impl AudioCodec for XiaozhiAudioCodec {
         }
         let i2s_driver_arc = self.i2s_driver.clone();
         let mut i2s_driver = i2s_driver_arc.lock().unwrap();
+
         i2s_driver.tx_enable().unwrap();
         i2s_driver.rx_enable().unwrap();
 

@@ -48,7 +48,7 @@ use xiaoxin_esp32::application::Application;
 use xiaoxin_esp32::audio::codec::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::codec::es8311::Es8311;
 use xiaoxin_esp32::audio::codec::opus::decoder::OpusAudioDecoder;
-use xiaoxin_esp32::common::button;
+use xiaoxin_esp32::common::{button, gpio_button};
 use xiaoxin_esp32::utils::ffi::c_task_trampoline;
 use xiaoxin_esp32::{
     audio,
@@ -635,17 +635,19 @@ fn main1() -> Result<()> {
 
             // b. 如果当前处于录音状态，就持续读取数据
             if is_recording {
-                const READ_CHUNK_SIZE: usize = 1024;
+                const READ_CHUNK_SIZE: usize = 256;
                 let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
                 let mut i2s_guard = i2s_clone.lock().unwrap();
                 if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
-                    info!("bytes read from I2S : {} ", bytes_read);
+                    // info!("bytes read from I2S : {} ", bytes_read);
+
                     if bytes_read > 0 {
-                        state_clone
-                            .buffer
-                            .lock()
-                            .unwrap()
-                            .extend(&read_buffer[..bytes_read]);
+                        let pcm_data = &read_buffer[..bytes_read];
+
+                        play_pcm_audio(i2s_guard, pcm_data);
+
+                        // state_clone.buffer.lock().unwrap().extend(pcm_data);
+                        // info!("bytes read from I2S-2 : {:?}", pcm_data);
                     }
                 } else {
                     info!("I2Stream: Error reading I2S");
@@ -675,39 +677,32 @@ fn main1() -> Result<()> {
     // // 尝试播放P3音频 ，下面是已经成功的代码。
     play_p3_audio(i2s_clone_for_player.lock().unwrap());
     // play_pcm_asset(i2s_clone_for_player.lock().unwrap());
-    let mut touch_button = Box::new(button::Button::new(pins.gpio0).unwrap());
+    let mut touch_button = Box::new(gpio_button::Button::new(0).unwrap());
     let mut volume_button = button::Button::new(pins.gpio47).unwrap();
+
+    let mut speaking = false;
+    touch_button.on_click(move || {
+        info!("touch_button 1 pressed!");
+        if !speaking {
+            println!("touch_button 1 pressed!");
+            cmd_sender.send(AudioCommand::StartRecording).unwrap();
+            speaking = true;
+        } else {
+            println!("is speaking !");
+            // 发送“停止并播放”命令
+            cmd_sender.send(AudioCommand::StopAndPlayback).unwrap();
+            speaking = false;
+            log::info!("==> Action: Playback Recorded Audio");
+        }
+    })?;
 
     info!("Waiting for button press...");
     block_on(async move {
         // println!("Buttons initialized. Waiting for press...");
-        let mut speaking = false;
+
         loop {
             select! {
-                _ = touch_button.wait().fuse()  => {
 
-                    if !speaking {
-
-                        println!("touch_button 1 pressed!");
-                        cmd_sender.send(AudioCommand::StartRecording).unwrap();
-
-                        // let mut i2s_guard = i2s_clone_for_player.lock().unwrap();
-
-                        // play_audio(i2s_guard);
-                        // log::info!("[Audio Task] play_audio finished.");
-
-
-                        speaking = true;
-                        touch_button.enable_interrupt().unwrap();
-                    } else {
-                        println!("is speaking !");
-                        // 发送“停止并播放”命令
-                        cmd_sender.send(AudioCommand::StopAndPlayback).unwrap();
-                        speaking = false;
-                        log::info!("==> Action: Playback Recorded Audio");
-                        touch_button.enable_interrupt().unwrap();
-                    }
-                }
                 _ = volume_button.wait().fuse() => {
                     println!("volume_button 2 pressed!");
                     volume_button.enable_interrupt().unwrap();
@@ -853,6 +848,24 @@ fn play_pcm_asset(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
             Ok(bytes_written) => {
                 // 打印一些进度信息，方便调试
                 // info!("Successfully wrote {} bytes to I2S.", bytes_written);
+            }
+            Err(e) => {
+                // 如果在写入过程中出错，打印错误并跳出循环
+                info!("I2S write error on a chunk: {:?}", e);
+                break;
+            }
+        }
+    }
+}
+
+fn play_pcm_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>, audio_data: &[u8]) {
+    const CHUNK_SIZE: usize = 4096;
+    for chunk in audio_data.chunks(CHUNK_SIZE) {
+        // 4. 逐块写入I2S驱动
+        match i2s_driver.write(chunk, BLOCK) {
+            Ok(bytes_written) => {
+                // 打印一些进度信息，方便调试
+                info!("Successfully wrote {} bytes to I2S.", bytes_written);
             }
             Err(e) => {
                 // 如果在写入过程中出错，打印错误并跳出循环

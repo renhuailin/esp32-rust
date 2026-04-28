@@ -1,4 +1,4 @@
-use crate::audio::codec::types::AudioStreamPacket;
+use crate::{audio::codec::types::AudioStreamPacket, common::converter::i16_slice_to_bytes};
 use anyhow::{Error, Result};
 use esp_idf_hal::{
     delay::BLOCK,
@@ -65,7 +65,7 @@ pub type AudioBuffer = VecDeque<u8>;
 pub struct SharedAudioState {
     pub buffer: Mutex<AudioBuffer>,
     pub audio_packet_buffer: Mutex<VecDeque<AudioStreamPacket>>, // 我们可以添加一个Condvar，以便在录音满或播放空时进行等待
-                                                                 // 但为了简单起见，我们先只用Mutex
+    pub pcm_buffer: Mutex<VecDeque<i16>>,                        //用于回放的pcm数据buffer
 }
 
 impl SharedAudioState {
@@ -73,6 +73,7 @@ impl SharedAudioState {
         Self {
             buffer: Mutex::new(VecDeque::new()),
             audio_packet_buffer: Mutex::new(VecDeque::new()),
+            pcm_buffer: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -279,12 +280,12 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
-        //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(
-            AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
-        ));
+        // let audio_processor = Arc::new(Mutex::new(
+        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        // ));
 
-        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -327,7 +328,7 @@ impl Application {
             audio_packet_queue,
             audio_decode_queue,
             busy_decoding_audio: Arc::new(Mutex::new(false)),
-            audio_test_mode: false,
+            audio_test_mode: true,
             shared_audio_state,
             opus_decoder,
             opus_encoder,
@@ -385,7 +386,7 @@ impl Application {
         });
 
         let codec_clone = Arc::clone(&codec_arc);
-
+        let codec_clone_for_pcm_player = Arc::clone(&codec_arc);
         let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
 
         let inner_sender = self.inner_sender.clone();
@@ -407,6 +408,22 @@ impl Application {
                     let inner_sender1 = inner_sender.clone();
                     let encoder = Arc::clone(&opus_encoder);
                     let audio_state1 = Arc::clone(&audio_state);
+
+                    if audio_test_mode {
+                        // sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
+                        // audio_state1
+                        //     .pcm_buffer
+                        //     .lock()
+                        //     .unwrap()
+                        //     .extend(pcm_data.as_slice());
+                        let pcm_u8 = i16_slice_to_bytes(pcm_data.as_slice()).unwrap();
+                        codec_clone_for_pcm_player
+                            .lock()
+                            .unwrap()
+                            .test_play_pcm(pcm_u8)
+                            .unwrap();
+                        continue;
+                    }
 
                     let result = encoder
                         .lock()
@@ -457,8 +474,6 @@ impl Application {
         }
 
         let audio_processor = Arc::clone(&self.audio_processor);
-
-        let codec_clone_for_pcm_player = Arc::clone(&codec_arc);
 
         let audio_state = Arc::clone(&self.shared_audio_state);
 
@@ -563,6 +578,8 @@ impl Application {
         let audio_packet_send_queue_arc = Arc::clone(&self.audio_packet_queue);
         let codec_for_opus_player = Arc::clone(&self.board.get_audio_codec());
 
+        let codec_clone_for_pcm_player = Arc::clone(&self.board.get_audio_codec());
+
         loop {
             let opus_decoder = Arc::clone(&self.opus_decoder);
             match self.inner_receiver.recv() {
@@ -595,14 +612,23 @@ impl Application {
                                 // };
                                 // let pcm_u8: &[u8] = pcm_data.make_contiguous();
 
-                                // info!("准备播放音频数据，内容: {} ", pcm_u8.len());
+                                info!("audio_test_mode: 准备本地播放PCM音频数据");
+                                let mut pcm_i16: VecDeque<i16> = {
+                                    let mut buffer = audio_state.pcm_buffer.lock().unwrap();
+                                    std::mem::take(&mut *buffer)
+                                };
+                                let pcm_u8 = i16_slice_to_bytes(pcm_i16.make_contiguous()).unwrap();
 
-                                // codec_clone_for_pcm_player
-                                //     .lock()
-                                //     .unwrap()
-                                //     .test_play_pcm(pcm_u8)
-                                //     .unwrap();
+                                codec_clone_for_pcm_player
+                                    .lock()
+                                    .unwrap()
+                                    .test_play_pcm(pcm_u8)
+                                    .unwrap();
+                                continue;
 
+                                // thread::sleep(Duration::from_millis(1000 * 5));
+
+                                info!("audio_test_mode: 准备本地播放Opus音频数据");
                                 // 下面的代码是用于Opus音频本地回放测试用的
                                 let opus_data: VecDeque<AudioStreamPacket> = {
                                     let mut buffer =
@@ -1424,7 +1450,7 @@ fn start_audio_input(
         if bytes_read > 0 {
             let audio_data = &read_buffer[..bytes_read];
 
-            // info!("准备播放音频数据，内容: {:?} ", audio_data);
+            // info!("从es7210中读取的音频内容: {:?} ", audio_data);
 
             // let audio_data_md5 = calc_md5_builtin(audio_data);
             // info!(
@@ -1434,15 +1460,15 @@ fn start_audio_input(
             // let start = Instant::now();
             let bytes_to_i16_result = bytes_to_i16_slice(&audio_data).unwrap();
 
-            // 1. 创建一个干净的单声道缓冲区
-            // 容量是原来的一半
-            let mut mono_samples = Vec::with_capacity(bytes_to_i16_result.len() / 2);
+            // // 1. 创建一个干净的单声道缓冲区
+            // // 容量是原来的一半
+            // let mut mono_samples = Vec::with_capacity(bytes_to_i16_result.len() / 2);
 
-            // 2. 剔除那些全是 0 的奇数通道 (索引 1, 3, 5...)
-            // 只保留有声音的通道 0 (索引 0, 2, 4...)
-            for i in (0..bytes_to_i16_result.len()).step_by(2) {
-                mono_samples.push(bytes_to_i16_result[i]);
-            }
+            // // 2. 剔除那些全是 0 的奇数通道 (索引 1, 3, 5...)
+            // // 只保留有声音的通道 0 (索引 0, 2, 4...)
+            // for i in (0..bytes_to_i16_result.len()).step_by(2) {
+            //     mono_samples.push(bytes_to_i16_result[i]);
+            // }
 
             // let duration = start.elapsed();
             // info!("数据转换 耗时: {:?}", duration);
@@ -1450,26 +1476,26 @@ fn start_audio_input(
 
             // info!("真正喂进去的 i16 长度: {}", bytes_to_i16_result.len());
 
-            // 打印最大振幅，以调试es7210的输出音量
-            let max_val = mono_samples
-                .iter()
-                .map(|&x| if x == i16::MIN { 32767 } else { x.abs() })
-                .max()
-                .unwrap_or(0);
-            info!(
-                "首几个样本: [{}, {}, {}, {}]",
-                mono_samples[0], mono_samples[1], mono_samples[2], mono_samples[3]
-            );
-            info!("音频数据最大振幅: {}", max_val);
-            if max_val >= 10000 && max_val <= 28000 {
-                info!(" read data from codec es7210, bytes_read: {}", bytes_read);
-                info!("检测到合理的音频数据: {}", max_val);
-            }
+            // // 打印最大振幅，以调试es7210的输出音量
+            // let max_val = mono_samples
+            //     .iter()
+            //     .map(|&x| if x == i16::MIN { 32767 } else { x.abs() })
+            //     .max()
+            //     .unwrap_or(0);
+            // info!(
+            //     "首几个样本: [{}, {}, {}, {}]",
+            //     mono_samples[0], mono_samples[1], mono_samples[2], mono_samples[3]
+            // );
+            // info!("音频数据最大振幅: {}", max_val);
+            // if max_val >= 10000 && max_val <= 28000 {
+            //     info!(" read data from codec es7210, bytes_read: {}", bytes_read);
+            //     info!("检测到合理的音频数据: {}", max_val);
+            // }
 
-            // // 3. 再次获取锁进行 feed
+            // // 3. 再次获取锁进行 feed从es7210中读取的音频内容
             // // 此时 codec 的锁已经释放了，避免交叉死锁
             // let start = Instant::now();
-            audio_processor.lock().unwrap().feed(&mono_samples);
+            audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
             // let duration = start.elapsed();
             // info!("Feed 数据 耗时: {:?}", duration);
         }

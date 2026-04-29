@@ -280,8 +280,15 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
+        let (input_channels, input_reference) = {
+            let codec = board.get_audio_codec().clone();
+            let input_channels = codec.lock().unwrap().input_channels();
+            let input_reference = codec.lock().unwrap().input_reference();
+            (input_channels, input_reference)
+        };
+
         // let audio_processor = Arc::new(Mutex::new(
-        //     AfeAudioProcessor::new(board.get_audio_codec().clone()).unwrap(),
+        //     AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
         // ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
@@ -328,7 +335,7 @@ impl Application {
             audio_packet_queue,
             audio_decode_queue,
             busy_decoding_audio: Arc::new(Mutex::new(false)),
-            audio_test_mode: true,
+            audio_test_mode: false,
             shared_audio_state,
             opus_decoder,
             opus_encoder,
@@ -1495,6 +1502,15 @@ fn start_audio_input(
             // // 3. 再次获取锁进行 feed从es7210中读取的音频内容
             // // 此时 codec 的锁已经释放了，避免交叉死锁
             // let start = Instant::now();
+
+            info!(
+                "首几个样本: [{}, {}, {}, {}]",
+                bytes_to_i16_result[0],
+                bytes_to_i16_result[1],
+                bytes_to_i16_result[2],
+                bytes_to_i16_result[3]
+            );
+
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
             // let duration = start.elapsed();
             // info!("Feed 数据 耗时: {:?}", duration);

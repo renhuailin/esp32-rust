@@ -45,7 +45,6 @@ struct ProcessorState {
 }
 
 pub struct AfeAudioProcessor {
-    codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     // afe_data: Box<esp_afe_sr_data_t>,
     // afe_iface: Box<esp_afe_sr_iface_t>,
     afe_data: SendPtr<esp_afe_sr_data_t>,
@@ -58,9 +57,9 @@ pub struct AfeAudioProcessor {
     cond: Arc<Condvar>,
 }
 impl AfeAudioProcessor {
-    pub fn new(codec: Arc<Mutex<dyn AudioCodec + 'static>>) -> Result<Self, anyhow::Error> {
+    pub fn new(input_channels: usize, input_reference: bool) -> Result<Self, anyhow::Error> {
         info!("Initializing AfeAudioProcessor");
-        let input_reference = codec.lock().unwrap().input_reference();
+        // let input_reference = codec.lock().unwrap().input_reference();
         let ref_num = if input_reference { 1 } else { 0 };
 
         // std::string input_format;
@@ -78,7 +77,7 @@ impl AfeAudioProcessor {
         );
 
         let mut input_format = "".to_string();
-        let input_channels = codec.lock().unwrap().input_channels();
+        // let input_channels = codec.lock().unwrap().input_channels();
         info!("input_channels: {}", input_channels);
 
         for _ in 0..(input_channels - ref_num) {
@@ -229,7 +228,6 @@ impl AfeAudioProcessor {
         // let input_channels = codec.lock().unwrap().input_channels() as usize;
 
         let mut processor = Self {
-            codec: codec,
             // afe_data: afe_data,
             // afe_iface: afe_iface,
             afe_data: SendPtr(afe_data),
@@ -436,10 +434,10 @@ impl AudioProcessor for AfeAudioProcessor {
             ((*self.afe_iface.as_ptr()).get_feed_chunksize.unwrap())(self.afe_data.as_ptr())
                 as usize
         };
-        info!(
-            "feed_chunksize: {} , input_channels: {}",
-            feed_chunksize, self.input_channels
-        );
+        // info!(
+        //     "feed_chunksize: {} , input_channels: {}",
+        //     feed_chunksize, self.input_channels
+        // );
         feed_chunksize * self.input_channels
     }
 

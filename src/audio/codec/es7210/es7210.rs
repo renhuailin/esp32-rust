@@ -99,7 +99,7 @@ where
                                                       // 4:0 ADC clock divide 0/1 – no divide 2 – divide by 2
 
         self.mic_select(self.input_mics)?;
-        self.set_channel_gain(self.input_mics, 0xF, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0x0F, 30.0)?;
 
         //把clcok off的设置保存起来,在enbale的时候需要用到。
         self.clock_off_status = self.read_reg(ES7210_CLOCK_OFF_REG_01)?;
@@ -139,7 +139,7 @@ where
 
         self.mic_select(self.input_mics)?;
 
-        self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
+        // self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
 
         self.write_reg(ES7210_RESET_REG_00, 0x71)?; // 0x71=0b01110001
         self.write_reg(ES7210_RESET_REG_00, 0x41)?; //0x41=01000001b reset master mode LRCK and SCLK, and enable Chip state machine power down
@@ -173,7 +173,7 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(self.input_mics, 0x01, 30.0)?;
+        self.set_channel_gain(self.input_mics, 0x0F, 30.0)?;
 
         self.enabled = true;
 

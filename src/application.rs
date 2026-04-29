@@ -230,6 +230,8 @@ pub struct Application {
     // 而是直接保存在这个字段的buffer里，然后在音箱端解码，播放出来，
     // 主要是用于测试音频采集是否正常及解码是否正常。
     shared_audio_state: Arc<SharedAudioState>,
+
+    audio_format: String, // PCM, OPUS，注意要与服务器端的格式一致
 }
 impl Application {
     pub fn new() -> Result<Self> {
@@ -287,12 +289,12 @@ impl Application {
             (input_channels, input_reference)
         };
 
-        // let audio_processor = Arc::new(Mutex::new(
-        //     AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
-        // ));
+        let audio_processor = Arc::new(Mutex::new(
+            AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
+        ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -342,6 +344,7 @@ impl Application {
             opus_encoder,
             inner_pcm_tx: pcm_tx,
             inner_pcm_rx: Some(pcm_rx),
+            audio_format: "opus".to_string(),
         };
         Ok(instance)
     }
@@ -403,6 +406,8 @@ impl Application {
         let audio_state = Arc::clone(&self.shared_audio_state);
 
         let opus_encoder_arc = Arc::clone(&self.opus_encoder);
+
+        let audio_format = self.audio_format.clone();
         let encode_thread = thread::Builder::new()
             .name("encoder_task".into())
             .stack_size(32 * 1024)
@@ -433,43 +438,60 @@ impl Application {
                         continue;
                     }
 
-                    let result = encoder
-                        .lock()
-                        .map_err(|e| {
-                            error!("Encoder lock poisoned: {:?}", e);
-                            // 可以选择 clear_poison() 或者直接返回
-                        })
-                        .unwrap()
-                        .encode(pcm_data, &mut move |opus_data: Vec<u8>| {
-                            // info!("编码完成，add audio packet to queue");
-                            let packet = AudioStreamPacket {
-                                sample_rate: 16000,
-                                frame_duration: 60,
-                                timestamp: 0,
-                                payload: opus_data,
-                            };
+                    let sender = inner_sender1.clone();
 
-                            let sender = inner_sender1.clone();
+                    if audio_format == "pcm" {
+                        let pcm_u8 = i16_slice_to_bytes(&pcm_data.as_slice()).unwrap();
 
-                            if audio_test_mode {
-                                // sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
-                                audio_state1
-                                    .audio_packet_buffer
-                                    .lock()
-                                    .unwrap()
-                                    .push_back(packet);
-                            } else {
-                                if let Err(e) = sender.send(AppEvent::AddAudioPacketToQueue(packet))
-                                {
-                                    error!("Failed to send audio packet: {:?}", e);
-                                    return;
+                        let packet = AudioStreamPacket {
+                            sample_rate: 16000,
+                            frame_duration: 60,
+                            timestamp: 0,
+                            payload: pcm_u8.to_vec(),
+                        };
+                        if let Err(e) = sender.send(AppEvent::AddAudioPacketToQueue(packet)) {
+                            error!("Failed to send audio packet: {:?}", e);
+                            return;
+                        }
+                    } else {
+                        let result = encoder
+                            .lock()
+                            .map_err(|e| {
+                                error!("Encoder lock poisoned: {:?}", e);
+                                // 可以选择 clear_poison() 或者直接返回
+                            })
+                            .unwrap()
+                            .encode(pcm_data, &mut move |opus_data: Vec<u8>| {
+                                // info!("编码完成，add audio packet to queue");
+                                let packet = AudioStreamPacket {
+                                    sample_rate: 16000,
+                                    frame_duration: 60,
+                                    timestamp: 0,
+                                    payload: opus_data,
+                                };
+
+                                if audio_test_mode {
+                                    // sender.send(XzEvent::AudioPacketReceived(packet)).unwrap();
+                                    audio_state1
+                                        .audio_packet_buffer
+                                        .lock()
+                                        .unwrap()
+                                        .push_back(packet);
+                                } else {
+                                    if let Err(e) =
+                                        sender.send(AppEvent::AddAudioPacketToQueue(packet))
+                                    {
+                                        error!("Failed to send audio packet: {:?}", e);
+                                        return;
+                                    }
                                 }
+                            });
+
+                        match result {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Encode error: {:?}", e);
                             }
-                        });
-                    match result {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("Encode error: {:?}", e);
                         }
                     }
                 }
@@ -518,11 +540,12 @@ impl Application {
                 ptr::null_mut(),
                 1,
             );
-            // if res != esp_idf_sys::pdPass {
-            //     // 如果创建失败，记得收回内存，否则会泄漏
-            //     let _ = Box::from_raw(closure_ptr);
-            //     error!("Failed to create task");
-            // }
+            info!("create audio loop task - res: {}", res);
+            if res != 1 {
+                // 如果创建失败，记得收回内存，否则会泄漏
+                let _ = Box::from_raw(closure_ptr);
+                error!("Failed to create task");
+            }
         }
 
         info!("启动解码线程 start_output_audio ...");
@@ -566,7 +589,7 @@ impl Application {
 
         info!("Enter event loop,开始处理内部事件 ...");
 
-        // self.audio_alert("welcome");
+        self.audio_alert("success");
 
         // 处理内部事件
         self.event_loop()?;
@@ -1233,6 +1256,7 @@ impl Application {
         let p3_data = match filename {
             "wificonfig" => Some(include_bytes!("../assets/zh-CN/wificonfig.p3").to_vec()),
             "welcome" => Some(include_bytes!("../assets/zh-CN/welcome.p3").to_vec()),
+            "success" => Some(include_bytes!("../assets/common/success.p3").to_vec()),
             _ => None,
         };
 
@@ -1247,7 +1271,7 @@ impl Application {
     fn play_p3_data(&mut self, p3_data: Vec<u8>) {
         const CHUNK_SIZE: usize = 4096;
 
-        info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
+        // info!("Starting playback in chunks of {} bytes...", CHUNK_SIZE);
 
         if p3_data.len() < 4 {
             error!("P3 data is too small to be valid.");
@@ -1255,7 +1279,7 @@ impl Application {
         }
 
         let p3_data_len = p3_data.len();
-        info!("P3 data length: {} bytes", p3_data_len);
+        // info!("P3 data length: {} bytes", p3_data_len);
 
         let sample_rate = 16000; //# 采样率固定为16000Hz
         let channels = 1; //# 单声道
@@ -1274,7 +1298,7 @@ impl Application {
 
             let opus_data = &p3_data[(offset + 4)..(offset + 4 + frame_len)];
             offset += 4 + frame_len;
-            info!("offset {} bytes...", offset);
+            // info!("offset {} bytes...", offset);
 
             // decoder = decoder.decode(sample_rate, channels);
             let decode_result = opus_decoder.decode(opus_data);
@@ -1429,10 +1453,10 @@ fn start_audio_input(
         (processor.is_running(), processor.get_feed_size())
     };
 
-    // info!(
-    //     "application: is_running: {}, feed_size: {}",
-    //     is_running, feed_size
-    // );
+    info!(
+        "application: is_running: {}, feed_size: {}",
+        is_running, feed_size
+    );
 
     if is_running && feed_size > 0 {
         // let start = Instant::now();
@@ -1513,10 +1537,12 @@ fn start_audio_input(
             //     bytes_to_i16_result[2],
             //     bytes_to_i16_result[3]
             // );
-
+            info!("Feed 数据 前 - 内容: {} ", bytes_to_i16_result.len());
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
             // let duration = start.elapsed();
             // info!("Feed 数据 耗时: {:?}", duration);
+        } else {
+            info!("bytes_read is 0, 不进行feed");
         }
     }
 

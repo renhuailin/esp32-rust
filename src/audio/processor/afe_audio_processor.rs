@@ -76,16 +76,17 @@ impl AfeAudioProcessor {
             input_reference, ref_num
         );
 
-        let mut input_format = "".to_string();
+        // let mut input_format = "MM".to_string();
+        let mut input_format = "MR".to_string();
         // let input_channels = codec.lock().unwrap().input_channels();
         info!("input_channels: {}", input_channels);
 
-        for _ in 0..(input_channels - ref_num) {
-            input_format.push('M');
-        }
-        for _ in 0..ref_num {
-            input_format.push('R');
-        }
+        // for _ in 0..(input_channels - ref_num) {
+        //     input_format.push('M');
+        // }
+        // for _ in 0..ref_num {
+        //     input_format.push('R');
+        // }
 
         info!("AFE Input Format: {}", input_format); // 比如 "MR"
 
@@ -332,7 +333,7 @@ impl AfeAudioProcessor {
 
                     // 输出音频数据
                     if let Some(ref mut out_cb) = state_guard.output_callback {
-                        // info!("输出音频数据");
+                        info!(target:"AfeAudioProcessor", "输出音频数据");
                         let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
                         // 从 C 指针创建切片，然后转为 Vec (发生内存拷贝)
                         let data_slice =
@@ -394,7 +395,7 @@ impl AudioProcessor for AfeAudioProcessor {
             if let Some(feed_func) = (*iface_ptr).feed {
                 // info!("feed_func: {:?}", feed_func);
                 let ret = feed_func(data_ptr, data.as_ptr() as *const _);
-                // info!("Feed returned : {}", ret);
+                info!("AFE audio processor Feed returned : {}", ret);
                 // if ret != 0 {
                 //     // 只在错误时输出日志
                 //     info!("Feed returned error: {}", ret);

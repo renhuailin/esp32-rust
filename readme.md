@@ -1,3 +1,6 @@
+服务器端的 conn.audio_format的格式 由 client端的hello message决定.
+所以当要切换成pcm时，要修改application的audio_format,还要修改ClientHelloMessage这个struct.
+
 # 立小志，成大事！
 
 开始升级 rust 版本， rustc 1.88.0 (6b00bc388 2025-06-23) -> 1.92

@@ -187,30 +187,30 @@ impl JiangLianS3CamBoard {
             .init()
             .map_err(|e| anyhow::anyhow!("Failed to init AXP173: {:?}", e))?;
 
-        // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。
-        // 所以要设置LDO4的电压为3.3V  (3300 - 700) / 25 = 104
-        let ldo4 = Ldo::ldo4_with_voltage(104, true);
+        // // 根据axp173手册，LDO4的电压由一个byte,8位bit表示，电压范围是：0.7-3.5V， 25mV/step，每个bit表示25mV。
+        // // 所以要设置LDO4的电压为3.3V  (3300 - 700) / 25 = 104
+        // let ldo4 = Ldo::ldo4_with_voltage(104, true);
 
-        // 根据axp173手册，LDO2,LDO3的电压由一个byte,低4位bit表示LDO3的电压，高4位表示LDO2的电压，电压范围是：1.8-3.3V， 100mV/step，每个bit表示100mV。
-        // 所以要设置LDO2,LDO3的电压为2.8V  (2800 - 1800) / 100 = 10
-        let ldo2 = Ldo::ldo2_with_voltage(10, true);
-        axp173
-            .enable_ldo(&ldo2)
-            .map_err(|e| anyhow::anyhow!("Failed to enable LDO2: {:?}", e))?;
-        axp173
-            .enable_ldo(&ldo4)
-            .map_err(|e| anyhow::anyhow!("Failed to enable LDO4: {:?}", e))?;
+        // // 根据axp173手册，LDO2,LDO3的电压由一个byte,低4位bit表示LDO3的电压，高4位表示LDO2的电压，电压范围是：1.8-3.3V， 100mV/step，每个bit表示100mV。
+        // // 所以要设置LDO2,LDO3的电压为2.8V  (2800 - 1800) / 100 = 10
+        // let ldo2 = Ldo::ldo2_with_voltage(10, true);
+        // axp173
+        //     .enable_ldo(&ldo2)
+        //     .map_err(|e| anyhow::anyhow!("Failed to enable LDO2: {:?}", e))?;
+        // axp173
+        //     .enable_ldo(&ldo4)
+        //     .map_err(|e| anyhow::anyhow!("Failed to enable LDO4: {:?}", e))?;
 
-        let power_control_value = axp173
-            .read_u8(0x33)
-            .map_err(|e| anyhow::anyhow!("Failed to read register 0x33: {:?}", e))?;
-        info!("Power controller reg33: {:08b}", power_control_value);
+        // let power_control_value = axp173
+        //     .read_u8(0x33)
+        //     .map_err(|e| anyhow::anyhow!("Failed to read register 0x33: {:?}", e))?;
+        // info!("Power controller reg33: {:08b}", power_control_value);
 
-        let reg12_value = axp173
-            .read_u8(0x12)
-            .map_err(|e| anyhow::anyhow!("Failed to read register 0x12: {:?}", e))?;
+        // let reg12_value = axp173
+        //     .read_u8(0x12)
+        //     .map_err(|e| anyhow::anyhow!("Failed to read register 0x12: {:?}", e))?;
 
-        info!("Power controller reg12: {:08b}", reg12_value);
+        // info!("Power controller reg12: {:08b}", reg12_value);
 
         axp173
             .set_exten(true)

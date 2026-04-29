@@ -40,7 +40,8 @@ impl AudioProcessor for NoAudioProcessor {
         return self.is_running;
     }
     fn get_feed_size(&self) -> usize {
-        return (30 * self.input_sample_rate / 1000).try_into().unwrap();
+        return 1024;
+        // return (30 * self.input_sample_rate / 1000).try_into().unwrap();
     }
 
     fn enable_device_aec(&mut self, enable: bool) {

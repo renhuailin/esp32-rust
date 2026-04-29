@@ -100,6 +100,7 @@ where
 
         self.mic_select(self.input_mics)?;
         self.set_channel_gain(self.input_mics, 0x0F, 30.0)?;
+        self.write_reg(ES7210_ANALOG_REG_40, 0x43)?;
 
         //把clcok off的设置保存起来,在enbale的时候需要用到。
         self.clock_off_status = self.read_reg(ES7210_CLOCK_OFF_REG_01)?;

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use esp_idf_sys::es32_component_opus::{
-    opus_encode, opus_encoder_create, opus_encoder_destroy, OpusEncoder, OPUS_APPLICATION_VOIP,
+    opus_encode, opus_encoder_create, opus_encoder_ctl, opus_encoder_destroy, OpusEncoder,
+    OPUS_APPLICATION_VOIP, OPUS_RESET_STATE, OPUS_SET_COMPLEXITY_REQUEST, OPUS_SET_DTX_REQUEST,
 };
 use log::{error, info};
 
@@ -48,6 +49,11 @@ impl OpusAudioEncoder {
                 "Failed to create opus audio encoder, error code : {:?}",
                 error
             ));
+        }
+
+        //enable DTX
+        unsafe {
+            opus_encoder_ctl(encoder, OPUS_SET_DTX_REQUEST as i32, 1);
         }
 
         let frame_size = sample_rate / 1000 * channels * duration_ms;
@@ -152,6 +158,31 @@ impl OpusAudioEncoder {
         }
 
         Ok(())
+    }
+
+    pub fn set_complexity(&mut self, complexity: i32) {
+        if !self.encoder.is_null() {
+            unsafe {
+                opus_encoder_ctl(self.encoder, OPUS_SET_COMPLEXITY_REQUEST as i32, complexity);
+            }
+        }
+    }
+
+    pub fn set_dtx(&mut self, enable: bool) {
+        let dtx = if enable { 1 } else { 0 };
+        if !self.encoder.is_null() {
+            unsafe {
+                opus_encoder_ctl(self.encoder, OPUS_SET_DTX_REQUEST as i32, dtx);
+            }
+        }
+    }
+
+    pub fn reset_state(&mut self) {
+        if !self.encoder.is_null() {
+            unsafe {
+                opus_encoder_ctl(self.encoder, OPUS_RESET_STATE as i32);
+            }
+        }
     }
 }
 

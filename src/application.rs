@@ -307,6 +307,7 @@ impl Application {
             )
             .unwrap(),
         ));
+        opus_encoder.lock().unwrap().set_complexity(5);
 
         let opus_decoder = Arc::new(Mutex::new(
             OpusAudioDecoder::new(
@@ -574,6 +575,7 @@ impl Application {
 
     ///播放音频提醒
     pub fn audio_alert(&mut self, message: &str) {
+        self.reset_decoder();
         self.play_p3_audio(message);
     }
 
@@ -1034,6 +1036,7 @@ impl Application {
                     // opus_encoder_->ResetState();
                     // audio_processor_->Start(); //启动音频处理器。
                     // wake_word_->StopDetection();
+                    self.opus_encoder.lock().unwrap().reset_state();
                     self.audio_processor.lock().unwrap().start();
                 }
             }
@@ -1503,13 +1506,13 @@ fn start_audio_input(
             // // 此时 codec 的锁已经释放了，避免交叉死锁
             // let start = Instant::now();
 
-            info!(
-                "首几个样本: [{}, {}, {}, {}]",
-                bytes_to_i16_result[0],
-                bytes_to_i16_result[1],
-                bytes_to_i16_result[2],
-                bytes_to_i16_result[3]
-            );
+            // info!(
+            //     "首几个样本: [{}, {}, {}, {}]",
+            //     bytes_to_i16_result[0],
+            //     bytes_to_i16_result[1],
+            //     bytes_to_i16_result[2],
+            //     bytes_to_i16_result[3]
+            // );
 
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
             // let duration = start.elapsed();

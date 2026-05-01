@@ -6,13 +6,15 @@ pub struct NoAudioProcessor {
     input_sample_rate: u32,
     audio_output_callback: Option<Box<dyn FnMut(Vec<i16>) + Send + 'static>>,
     is_running: bool,
+    frame_duration_ms: u32,
 }
 impl NoAudioProcessor {
-    pub fn new(sample_rate: u32) -> Self {
+    pub fn new(sample_rate: u32, frame_duration_ms: u32) -> Self {
         Self {
             input_sample_rate: sample_rate,
             audio_output_callback: None,
             is_running: false,
+            frame_duration_ms,
         }
     }
 }
@@ -40,8 +42,8 @@ impl AudioProcessor for NoAudioProcessor {
         return self.is_running;
     }
     fn get_feed_size(&self) -> usize {
-        return 1024;
-        // return (30 * self.input_sample_rate / 1000).try_into().unwrap();
+        let samples = self.input_sample_rate * self.frame_duration_ms / 1000;
+        return samples as usize * 2; //因为opus的帧是i16的，所以这里是2
     }
 
     fn enable_device_aec(&mut self, enable: bool) {

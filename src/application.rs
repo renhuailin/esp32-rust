@@ -1,4 +1,7 @@
-use crate::{audio::codec::types::AudioStreamPacket, common::converter::i16_slice_to_bytes};
+use crate::{
+    audio::codec::{types::AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE},
+    common::converter::i16_slice_to_bytes,
+};
 use anyhow::{Error, Result};
 use esp_idf_hal::{
     delay::BLOCK,
@@ -282,23 +285,26 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
-        let (input_channels, input_reference) = {
-            let codec = board.get_audio_codec().clone();
-            let input_channels = codec.lock().unwrap().input_channels();
-            let input_reference = codec.lock().unwrap().input_reference();
-            (input_channels, input_reference)
-        };
+        // let (input_channels, input_reference) = {
+        //     let codec = board.get_audio_codec().clone();
+        //     let input_channels = codec.lock().unwrap().input_channels();
+        //     let input_reference = codec.lock().unwrap().input_reference();
+        //     (input_channels, input_reference)
+        // };
 
         // let audio_processor = Arc::new(Mutex::new(
         //     AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
         // ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(
+            AUDIO_INPUT_SAMPLE_RATE,
+            OPUS_FRAME_DURATION_MS as u32,
+        )));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
-        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
         let channels = 2; //# 单声道
         info!("create opus encoder");
         let opus_encoder = Arc::new(Mutex::new(
@@ -444,8 +450,8 @@ impl Application {
                         let pcm_u8 = i16_slice_to_bytes(&pcm_data.as_slice()).unwrap();
 
                         let packet = AudioStreamPacket {
-                            sample_rate: 16000,
-                            frame_duration: 60,
+                            sample_rate: AUDIO_INPUT_SAMPLE_RATE as i32,
+                            frame_duration: OPUS_FRAME_DURATION_MS as i32,
                             timestamp: 0,
                             payload: pcm_u8.to_vec(),
                         };
@@ -464,8 +470,8 @@ impl Application {
                             .encode(pcm_data, &mut move |opus_data: Vec<u8>| {
                                 // info!("编码完成，add audio packet to queue");
                                 let packet = AudioStreamPacket {
-                                    sample_rate: 16000,
-                                    frame_duration: 60,
+                                    sample_rate: AUDIO_INPUT_SAMPLE_RATE as i32,
+                                    frame_duration: OPUS_FRAME_DURATION_MS as i32,
                                     timestamp: 0,
                                     payload: opus_data,
                                 };
@@ -1284,7 +1290,7 @@ impl Application {
         let p3_data_len = p3_data.len();
         // info!("P3 data length: {} bytes", p3_data_len);
 
-        let sample_rate = 16000; //# 采样率固定为16000Hz
+        let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
         let channels = 1; //# 单声道
         let mut opus_decoder = OpusAudioDecoder::new(
             sample_rate,
@@ -1774,7 +1780,7 @@ fn run_audio_decode_task(
     pcm_sender: SyncSender<Vec<u8>>,
     // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
 ) {
-    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
     let channels = 2; //# 单声道
 
     let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
@@ -1894,7 +1900,7 @@ fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     let p3_data_len = P3_DATA.len();
     info!("P3 data length: {} bytes", p3_data_len);
 
-    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
     let channels = 1; //# 单声道
     let mut opus_decoder = OpusAudioDecoder::new(
         sample_rate,

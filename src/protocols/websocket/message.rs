@@ -5,7 +5,8 @@ pub struct ClientHelloMessage;
 
 impl ClientHelloMessage {
     pub fn new() -> Result<String> {
-        let audio_format = "pcm";
+        // let audio_format = "pcm";
+        let audio_format = "opus";
 
         let body = format!(
             r#"{{

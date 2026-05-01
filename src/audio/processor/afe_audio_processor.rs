@@ -77,7 +77,7 @@ impl AfeAudioProcessor {
         );
 
         // let mut input_format = "MM".to_string();
-        let mut input_format = "MR".to_string();
+        let mut input_format = "MM".to_string();
         // let input_channels = codec.lock().unwrap().input_channels();
         info!("input_channels: {}", input_channels);
 

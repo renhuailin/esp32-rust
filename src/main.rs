@@ -45,6 +45,11 @@ use std::num::NonZeroU32;
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::{thread, time::Duration};
+use xiaoxin_esp32::audio::codec::opus::encoder::OpusAudioEncoder;
+use xiaoxin_esp32::audio::codec::OPUS_FRAME_DURATION_MS;
+use xiaoxin_esp32::audio::processor::afe_audio_processor::AfeAudioProcessor;
+use xiaoxin_esp32::audio::processor::audio_processor::AudioProcessor;
+use xiaoxin_esp32::common::converter::{bytes_to_i16_slice, i16_slice_to_bytes};
 
 use log::{error, info, warn, LevelFilter};
 use xiaoxin_esp32::application::Application;
@@ -88,16 +93,16 @@ pub enum AudioCommand {
     StopAndPlayback,
 }
 fn main() -> Result<()> {
-    // match run_app() {
-    //     Ok(_) => {
-    //         info!("app 异常退出！");
-    //     }
-    //     Err(e) => {
-    //         error!("{}", e);
-    //     }
-    // }
+    match run_app() {
+        Ok(_) => {
+            info!("app 异常退出！");
+        }
+        Err(e) => {
+            error!("{}", e);
+        }
+    }
 
-    main1().unwrap();
+    // main1().unwrap();
     Ok(())
 }
 
@@ -575,100 +580,193 @@ fn main1() -> Result<()> {
 
     let ws_client = Arc::new(Mutex::new(SimpleWSClient::new()));
 
-    thread::spawn(move || {
-        let mut is_recording = false;
-        loop {
-            // a. 检查是否有新的控制命令进来 (非阻塞)
-            if let Ok(command) = cmd_receiver.try_recv() {
-                match command {
-                    AudioCommand::StartRecording => {
-                        log::info!("[Audio Task] Received StartRecording command.");
+    let audio_processor = Arc::new(Mutex::new(AfeAudioProcessor::new(2, false).unwrap()));
 
-                        ws_client
-                            .lock()
-                            .unwrap()
-                            .send_text_message(r##"{"type":"start"}"##)
-                            .unwrap();
+    let ws_client_for_audio_processor = Arc::clone(&ws_client);
+    audio_processor
+        .lock()
+        .unwrap()
+        .on_output(Box::new(move |data| {
+            // info!("on audio processor output,data length: {}", data.len());
+            info!("on audio processor output data: {:?}", data);
+            let binary_data = i16_slice_to_bytes(data.as_slice()).unwrap();
+            ws_client_for_audio_processor
+                .lock()
+                .unwrap()
+                .send_binary_message(binary_data)
+                .unwrap();
+        }));
 
-                        // 清空旧缓冲区，准备录音
-                        state_clone.buffer.lock().unwrap().clear();
-                        is_recording = true;
-                    }
-                    AudioCommand::StopAndPlayback => {
-                        log::info!("[Audio Task] Received StopAndPlayback command.");
-                        is_recording = false;
+    let audio_processor_for_feed = Arc::clone(&audio_processor);
+    let feed_size = audio_processor_for_feed.lock().unwrap().get_feed_size();
 
-                        // --- 修正后的播放逻辑 ---
-                        let mut buffer_guard = state_clone.buffer.lock().unwrap();
+    // create opus encoder
+    let sample_rate = 16000; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+    let opus_encoder = Arc::new(Mutex::new(
+        OpusAudioEncoder::new(
+            sample_rate,
+            channels,
+            OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+        )
+        .unwrap(),
+    ));
+    opus_encoder.lock().unwrap().set_complexity(5);
 
-                        if !buffer_guard.is_empty() {
-                            log::info!("[Audio Task] Playing back {} bytes...", buffer_guard.len());
+    let use_audio_processor = false;
+    let use_opus_encoder = true;
 
-                            let binary_data = buffer_guard.make_contiguous();
+    let frame_duration_ms = 60;
+    let samples = 16000 * frame_duration_ms / 1000;
+    let READ_CHUNK_SIZE: usize = samples * 2; //因为opus的帧是i16的，所以这里是2
+
+    let _encode_thread = thread::Builder::new()
+        .name("encoder_task".into())
+        .stack_size(32 * 1024)
+        .spawn(move || {
+            let mut is_recording = false;
+            loop {
+                // a. 检查是否有新的控制命令进来 (非阻塞)
+                if let Ok(command) = cmd_receiver.try_recv() {
+                    match command {
+                        AudioCommand::StartRecording => {
+                            log::info!("[Audio Task] Received StartRecording command.");
+
                             ws_client
                                 .lock()
                                 .unwrap()
-                                .send_binary_message(binary_data)
+                                .send_text_message(r##"{"type":"start"}"##)
                                 .unwrap();
 
-                            log::info!("[Audio Task] Playback finished.");
-
-                            ws_client
-                                .lock()
-                                .unwrap()
-                                .send_text_message(r##"{"type":"stop"}"##)
-                                .unwrap();
-
-                            buffer_guard.clear(); // 清空缓冲区
+                            // 清空旧缓冲区，准备录音
+                            state_clone.buffer.lock().unwrap().clear();
+                            is_recording = true;
                         }
+                        AudioCommand::StopAndPlayback => {
+                            log::info!("[Audio Task] Received StopAndPlayback command.");
+                            is_recording = false;
 
-                        // // --- 执行播放逻辑 ---
-                        // let playback_data: Vec<u8>;
-                        // {
-                        //     let mut buffer_guard = state_clone.buffer.lock().unwrap();
-                        //     playback_data = buffer_guard.iter().cloned().collect();
-                        //     buffer_guard.clear();
-                        // }
+                            // --- 修正后的播放逻辑 ---
+                            let mut buffer_guard = state_clone.buffer.lock().unwrap();
 
-                        // if !playback_data.is_empty() {
-                        //     log::info!(
-                        //         "[Audio Task] Playing back {} bytes...",
-                        //         playback_data.len()
-                        //     );
-                        //     let mut i2s_guard = i2s_clone.lock().unwrap();
-                        //     if let Err(e) = i2s_guard.write_all(&playback_data, BLOCK) {
-                        //         log::error!("[Audio Task] Playback failed: {:?}", e);
-                        //     } else {
-                        //         log::info!("[Audio Task] Playback finished.");
-                        //     }
-                        // }
+                            if !buffer_guard.is_empty() {
+                                log::info!(
+                                    "[Audio Task] Playing back {} bytes...",
+                                    buffer_guard.len()
+                                );
+
+                                let binary_data = buffer_guard.make_contiguous();
+
+                                if use_audio_processor {
+                                    for chunk in binary_data.chunks(feed_size) {
+                                        let feed_data = bytes_to_i16_slice(chunk).unwrap();
+                                        if feed_data.len() < feed_size {
+                                            break;
+                                        }
+                                        audio_processor_for_feed.lock().unwrap().feed(feed_data);
+                                    }
+                                    thread::sleep(Duration::from_secs(1)); // wait 1s for audio processor to process and send data.
+                                } else if use_opus_encoder {
+                                    for chunk in binary_data.chunks(READ_CHUNK_SIZE) {
+                                        let pcm_data_i16 = bytes_to_i16_slice(chunk).unwrap();
+
+                                        let ws_client_for_opus_encoder = Arc::clone(&ws_client);
+
+                                        let result = opus_encoder
+                                            .lock()
+                                            .map_err(|e| {
+                                                error!("Encoder lock poisoned: {:?}", e);
+                                                // 可以选择 clear_poison() 或者直接返回
+                                            })
+                                            .unwrap()
+                                            .encode(
+                                                pcm_data_i16.to_vec(),
+                                                &mut move |opus_data: Vec<u8>| {
+                                                    ws_client_for_opus_encoder
+                                                        .lock()
+                                                        .unwrap()
+                                                        .send_binary_message(&opus_data)
+                                                        .unwrap();
+                                                },
+                                            );
+
+                                        match result {
+                                            Ok(_) => {}
+                                            Err(e) => {
+                                                error!("Encode error: {:?}", e);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    ws_client
+                                        .lock()
+                                        .unwrap()
+                                        .send_binary_message(binary_data)
+                                        .unwrap();
+                                }
+
+                                log::info!("[Audio Task] Playback finished.");
+
+                                ws_client
+                                    .lock()
+                                    .unwrap()
+                                    .send_text_message(r##"{"type":"stop"}"##)
+                                    .unwrap();
+
+                                buffer_guard.clear(); // 清空缓冲区
+                            }
+
+                            // // --- 执行播放逻辑 ---
+                            // let playback_data: Vec<u8>;
+                            // {
+                            //     let mut buffer_guard = state_clone.buffer.lock().unwrap();
+                            //     playback_data = buffer_guard.iter().cloned().collect();
+                            //     buffer_guard.clear();
+                            // }
+
+                            // if !playback_data.is_empty() {
+                            //     log::info!(
+                            //         "[Audio Task] Playing back {} bytes...",
+                            //         playback_data.len()
+                            //     );
+                            //     let mut i2s_guard = i2s_clone.lock().unwrap();
+                            //     if let Err(e) = i2s_guard.write_all(&playback_data, BLOCK) {
+                            //         log::error!("[Audio Task] Playback failed: {:?}", e);
+                            //     } else {
+                            //         log::info!("[Audio Task] Playback finished.");
+                            //     }
+                            // }
+                        }
                     }
                 }
-            }
 
-            // b. 如果当前处于录音状态，就持续读取数据
-            if is_recording {
-                const READ_CHUNK_SIZE: usize = 1024;
-                let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
-                let mut i2s_guard = i2s_clone.lock().unwrap();
-                if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
-                    info!("bytes read from I2S : {} ", bytes_read);
-                    if bytes_read > 0 {
-                        state_clone
-                            .buffer
-                            .lock()
-                            .unwrap()
-                            .extend(&read_buffer[..bytes_read]);
+                // b. 如果当前处于录音状态，就持续读取数据
+                if is_recording {
+                    let mut read_chunk_size = READ_CHUNK_SIZE;
+                    if use_audio_processor {
+                        read_chunk_size = audio_processor_for_feed.lock().unwrap().get_feed_size();
+                    }
+
+                    let mut read_buffer = vec![0u8; read_chunk_size];
+                    let mut i2s_guard = i2s_clone.lock().unwrap();
+                    if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
+                        info!("bytes read from I2S : {} ", bytes_read);
+                        if bytes_read > 0 {
+                            state_clone
+                                .buffer
+                                .lock()
+                                .unwrap()
+                                .extend(&read_buffer[..bytes_read]);
+                        }
+                    } else {
+                        info!("I2Stream: Error reading I2S");
                     }
                 } else {
-                    info!("I2Stream: Error reading I2S");
+                    // 如果不录音，就短暂休眠，避免CPU空转
+                    thread::sleep(Duration::from_millis(20));
                 }
-            } else {
-                // 如果不录音，就短暂休眠，避免CPU空转
-                thread::sleep(Duration::from_millis(20));
             }
-        }
-    });
+        });
     log::info!("Background audio processing task started.");
 
     // handle.join().unwrap();

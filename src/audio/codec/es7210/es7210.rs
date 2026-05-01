@@ -174,7 +174,7 @@ where
 
     pub fn enable(&mut self) -> Result<(), Error> {
         self.start()?;
-        self.set_channel_gain(1, 0x0F, 30.0)?;
+        self.set_channel_gain(3, 0x0F, 30.0)?;
 
         self.enabled = true;
 

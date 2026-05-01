@@ -1,10 +1,3 @@
-use std::collections::VecDeque;
-use std::ffi::{c_void, CStr};
-use std::num::NonZeroU32;
-use std::ptr;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::{thread, time::Duration};
-
 use anyhow::{anyhow, Result};
 use crossbeam_channel::unbounded;
 use esp_idf_hal::delay;
@@ -33,6 +26,10 @@ use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io;
 use esp_idf_svc::ota::{EspFirmwareInfoLoad, EspOta, EspOtaUpdate, FirmwareInfo};
+use esp_idf_svc::ws::client::{
+    EspWebSocketClient, EspWebSocketClientConfig, WebSocketEvent, WebSocketEventType,
+};
+use esp_idf_svc::ws::FrameType;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, timer::EspTaskTimerService};
 use esp_idf_sys::{
     esp_partition_find, esp_partition_get, esp_partition_next,
@@ -42,6 +39,12 @@ use esp_idf_sys::{
 use futures::{select, FutureExt};
 use mipidsi::error;
 use shared_bus::BusManagerSimple;
+use std::collections::VecDeque;
+use std::ffi::{c_void, CStr};
+use std::num::NonZeroU32;
+use std::ptr;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::{thread, time::Duration};
 
 use log::{error, info, warn, LevelFilter};
 use xiaoxin_esp32::application::Application;
@@ -50,6 +53,7 @@ use xiaoxin_esp32::audio::codec::es8311::Es8311;
 use xiaoxin_esp32::audio::codec::opus::decoder::OpusAudioDecoder;
 use xiaoxin_esp32::common::{button, gpio_button};
 use xiaoxin_esp32::utils::ffi::c_task_trampoline;
+use xiaoxin_esp32::wifi::wifi_driver::{Esp32WifiDriver, WifiStation};
 use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
@@ -84,16 +88,16 @@ pub enum AudioCommand {
     StopAndPlayback,
 }
 fn main() -> Result<()> {
-    match run_app() {
-        Ok(_) => {
-            info!("app 异常退出！");
-        }
-        Err(e) => {
-            error!("{}", e);
-        }
-    }
+    // match run_app() {
+    //     Ok(_) => {
+    //         info!("app 异常退出！");
+    //     }
+    //     Err(e) => {
+    //         error!("{}", e);
+    //     }
+    // }
 
-    // main1().unwrap();
+    main1().unwrap();
     Ok(())
 }
 
@@ -282,6 +286,7 @@ fn main1() -> Result<()> {
     // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
     let peripherals: Peripherals = Peripherals::take().unwrap();
+    let sysloop = EspSystemEventLoop::take()?;
 
     // let app_config = CONFIG;
     let pins = peripherals.pins;
@@ -555,9 +560,20 @@ fn main1() -> Result<()> {
     let i2s_clone = Arc::clone(&i2s_driver_arc);
     let state_clone = Arc::clone(&shared_state_arc);
 
+    let mut wifi_driver = Esp32WifiDriver::new(peripherals.modem, sysloop.clone())?;
+    let ssid = "CU_liu81802";
+    let password = "china-ops";
+
+    // let ssid = "1802";
+    // let password = "20250101";
+
+    wifi_driver.connect(ssid, password)?;
+
     // let notification = Arc::new(Notification::new());
     // let notifier = Arc::clone(&notification);
     // let notifier2 = Arc::clone(&notification);
+
+    let ws_client = Arc::new(Mutex::new(SimpleWSClient::new()));
 
     thread::spawn(move || {
         let mut is_recording = false;
@@ -567,6 +583,13 @@ fn main1() -> Result<()> {
                 match command {
                     AudioCommand::StartRecording => {
                         log::info!("[Audio Task] Received StartRecording command.");
+
+                        ws_client
+                            .lock()
+                            .unwrap()
+                            .send_text_message(r##"{"type":"start"}"##)
+                            .unwrap();
+
                         // 清空旧缓冲区，准备录音
                         state_clone.buffer.lock().unwrap().clear();
                         is_recording = true;
@@ -580,32 +603,22 @@ fn main1() -> Result<()> {
 
                         if !buffer_guard.is_empty() {
                             log::info!("[Audio Task] Playing back {} bytes...", buffer_guard.len());
-                            let i2s_clone_for_player2 = Arc::clone(&i2s_driver_arc);
-                            let mut i2s_guard = i2s_clone_for_player2.lock().unwrap();
-                            // VecDeque 提供了 as_slices() 方法，它返回一或两个连续的内存切片
-                            let (slice1, slice2) = buffer_guard.as_slices();
-                            // for frame in slice1 {
-                            //     info!("[Audio Task] Playback frame: {:08b}", frame);
-                            // }
-                            // 播放第一个切片
-                            if let Err(e) = i2s_guard.write_all(slice1, BLOCK) {
-                                log::error!("[Audio Task] Playback failed on slice1: {:?}", e);
-                            } else {
-                                // 如果有第二个切片，继续播放
-                                if !slice2.is_empty() {
-                                    // for frame in slice2 {
-                                    //     info!("[Audio Task] Playback frame: {:08b}", frame);
-                                    // }
-                                    if let Err(e) = i2s_guard.write_all(slice2, BLOCK) {
-                                        log::error!(
-                                            "[Audio Task] Playback failed on slice2: {:?}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
+
+                            let binary_data = buffer_guard.make_contiguous();
+                            ws_client
+                                .lock()
+                                .unwrap()
+                                .send_binary_message(binary_data)
+                                .unwrap();
 
                             log::info!("[Audio Task] Playback finished.");
+
+                            ws_client
+                                .lock()
+                                .unwrap()
+                                .send_text_message(r##"{"type":"stop"}"##)
+                                .unwrap();
+
                             buffer_guard.clear(); // 清空缓冲区
                         }
 
@@ -635,19 +648,17 @@ fn main1() -> Result<()> {
 
             // b. 如果当前处于录音状态，就持续读取数据
             if is_recording {
-                const READ_CHUNK_SIZE: usize = 256;
+                const READ_CHUNK_SIZE: usize = 1024;
                 let mut read_buffer = vec![0u8; READ_CHUNK_SIZE];
                 let mut i2s_guard = i2s_clone.lock().unwrap();
                 if let Ok(bytes_read) = i2s_guard.read(&mut read_buffer, 50) {
-                    // info!("bytes read from I2S : {} ", bytes_read);
-
+                    info!("bytes read from I2S : {} ", bytes_read);
                     if bytes_read > 0 {
-                        let pcm_data = &read_buffer[..bytes_read];
-
-                        play_pcm_audio(i2s_guard, pcm_data);
-
-                        // state_clone.buffer.lock().unwrap().extend(pcm_data);
-                        // info!("bytes read from I2S-2 : {:?}", pcm_data);
+                        state_clone
+                            .buffer
+                            .lock()
+                            .unwrap()
+                            .extend(&read_buffer[..bytes_read]);
                     }
                 } else {
                     info!("I2Stream: Error reading I2S");
@@ -674,11 +685,8 @@ fn main1() -> Result<()> {
 
     // once_timer2.after(Duration::from_secs(2)).unwrap();
 
-    // // 尝试播放P3音频 ，下面是已经成功的代码。
-    play_p3_audio(i2s_clone_for_player.lock().unwrap());
-    // play_pcm_asset(i2s_clone_for_player.lock().unwrap());
     let mut touch_button = Box::new(gpio_button::Button::new(0).unwrap());
-    let mut volume_button = button::Button::new(pins.gpio47).unwrap();
+    // let mut volume_button = button::Button::new(pins.gpio47).unwrap();
 
     let mut speaking = false;
     touch_button.on_click(move || {
@@ -696,29 +704,13 @@ fn main1() -> Result<()> {
         }
     })?;
 
-    info!("Waiting for button press...");
-    block_on(async move {
-        // println!("Buttons initialized. Waiting for press...");
+    // info!("Test complete. Entering infinite loop.");
 
-        loop {
-            select! {
-
-                _ = volume_button.wait().fuse() => {
-                    println!("volume_button 2 pressed!");
-                    volume_button.enable_interrupt().unwrap();
-                },
-            }
-        }
-    });
-
-    info!("Test complete. Entering infinite loop.");
-
-    // loop {
-    //     FreeRtos::delay_ms(1000);
-    // }
+    loop {
+        FreeRtos::delay_ms(1000);
+    }
     Ok(())
 }
-
 fn play_p3_audio(mut i2s_driver: MutexGuard<'_, I2sDriver<'_, I2sBiDir>>) {
     const P3_DATA: &'static [u8] = include_bytes!("../assets/activation.p3");
 
@@ -888,5 +880,106 @@ fn led_demo(led_pin: gpio::AnyOutputPin, channel: esp_idf_hal::rmt::CHANNEL0) {
         info!("Blue!");
         ws2812.set_pixel(rgb::RGB8::new(0, 0, 255)).unwrap();
         FreeRtos::delay_ms(1000);
+    }
+}
+
+struct SimpleWSClient {
+    client: Option<Box<EspWebSocketClient<'static>>>,
+}
+
+impl SimpleWSClient {
+    pub fn new() -> Self {
+        let ws_url = "ws://192.168.1.40:3000";
+        // let ws_url = "ws://192.168.1.40:8000/xiaozhi/v1/";
+        let config = EspWebSocketClientConfig {
+            skip_cert_common_name_check: true,
+            ..Default::default()
+        };
+        let timeout = Duration::from_secs(10);
+
+        let client = Some(Box::new(
+            EspWebSocketClient::new(ws_url, &config, timeout, move |event| {
+                // info!("handle event");
+                if let Ok(event) = event {
+                    match event.event_type {
+                        WebSocketEventType::BeforeConnect => {
+                            // info!("Websocket before connect");
+                        }
+                        WebSocketEventType::Connected => {
+                            info!("Websocket connected");
+                        }
+                        WebSocketEventType::Disconnected => {
+                            info!("Websocket disconnected");
+                        }
+
+                        WebSocketEventType::Close(reason) => {
+                            info!("Websocket close, reason: {reason:?}");
+                        }
+
+                        WebSocketEventType::Closed => {
+                            info!("Websocket closed");
+                        }
+
+                        WebSocketEventType::Text(text) => {
+                            info!("Websocket received a text message, text: {text}");
+                        }
+
+                        WebSocketEventType::Binary(binary) => {
+                            info!("Websocket recv, binary: {binary:?}");
+                        }
+                        WebSocketEventType::Ping => {
+                            info!("Websocket ping");
+                        }
+                        WebSocketEventType::Pong => {
+                            info!("Websocket pong");
+                        }
+                    }
+                }
+            })
+            .unwrap(),
+        ));
+
+        Self { client }
+    }
+
+    pub fn send_text_message(&mut self, message: &str) -> Result<(), anyhow::Error> {
+        if let Some(client) = &mut self.client {
+            if client.is_connected() {
+                info!("WebSocketProtocol: Sending text message - {} ", message);
+                match client.send(FrameType::Text(false), message.as_bytes()) {
+                    Ok(_) => info!("WebSocketProtocol: Hello message sent!"),
+                    Err(e) => {
+                        info!("WebSocketProtocol: Send error: {:?}", e);
+                    }
+                }
+            } else {
+                info!("WebSocketProtocol: Client not connected, cannot send.");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn send_binary_message(&mut self, data: &[u8]) -> Result<(), anyhow::Error> {
+        if let Some(client) = &mut self.client {
+            if client.is_connected() {
+                match client.send(FrameType::Binary(false), data) {
+                    Ok(_) => {
+                        info!("WebSocketProtocol: Audio packet sent!")
+                    }
+                    Err(e) => info!("WebSocketProtocol: Send error: {:?}", e),
+                }
+            } else {
+                info!("WebSocketProtocol : Client not connected, cannot send.");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SimpleWSClient {
+    fn drop(&mut self) {
+        if let Some(_) = self.client.take() {
+            //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。
+        }
     }
 }

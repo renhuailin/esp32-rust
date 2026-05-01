@@ -1,5 +1,7 @@
+# 音频格式修改
+
 服务器端的 conn.audio_format的格式 由 client端的hello message决定.
-所以当要切换成pcm时，要修改application的audio_format,还要修改ClientHelloMessage这个struct.
+所以当要切换成pcm时，要修改application的`audio_format`,还要修改`ClientHelloMessage`这个struct.
 
 # 立小志，成大事！
 

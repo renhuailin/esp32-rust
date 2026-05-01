@@ -289,12 +289,12 @@ impl Application {
             (input_channels, input_reference)
         };
 
-        let audio_processor = Arc::new(Mutex::new(
-            AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
-        ));
+        // let audio_processor = Arc::new(Mutex::new(
+        //     AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
+        // ));
 
         //先使用NoAudioProcessor，等以后有时间再改成AfeAudioProcessor，因为我测试很久，AfeAudioProcessor的总是报堆栈溢出。
-        // let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
+        let audio_processor = Arc::new(Mutex::new(NoAudioProcessor::new(16000)));
 
         let shared_audio_state = Arc::new(SharedAudioState::new());
 
@@ -1046,6 +1046,9 @@ impl Application {
                     previous_state, self.state
                 );
                 if !self.audio_processor.lock().unwrap().is_running() {
+                    if !self.protocol.is_connected() {
+                        self.protocol.open_audio_channel().unwrap();
+                    }
                     self.protocol
                         .send_start_linstening(self.listening_mode.clone())
                         .unwrap();
@@ -1380,7 +1383,7 @@ fn audio_loop(
     let audio_processor_arc = Arc::clone(&audio_processor);
 
     let feed_size = audio_processor.lock().unwrap().get_feed_size();
-    info!("application: feed_size: {}", feed_size);
+    // info!("application: feed_size: {}", feed_size);
     // const READ_CHUNK_SIZE: usize = 1024;
     let mut read_buffer = vec![0u8; feed_size];
     // let mut read_buffer = vec![0u8; 1024];
@@ -1453,10 +1456,10 @@ fn start_audio_input(
         (processor.is_running(), processor.get_feed_size())
     };
 
-    info!(
-        "application: is_running: {}, feed_size: {}",
-        is_running, feed_size
-    );
+    // info!(
+    //     "application: is_running: {}, feed_size: {}",
+    //     is_running, feed_size
+    // );
 
     if is_running && feed_size > 0 {
         // let start = Instant::now();

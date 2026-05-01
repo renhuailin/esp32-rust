@@ -138,7 +138,10 @@ impl Protocol for WebSocketProtocol {
             if client.is_connected() {
                 match client.send(FrameType::Binary(false), &packet.payload) {
                     Ok(_) => {
-                        // info!("WebSocketProtocol: Audio packet sent!")
+                        // info!(
+                        //     "WebSocketProtocol: Audio packet sent! {:?}",
+                        //     &packet.payload
+                        // )
                     }
                     Err(e) => info!("WebSocketProtocol: Send error: {:?}", e),
                 }
@@ -150,7 +153,7 @@ impl Protocol for WebSocketProtocol {
     }
 
     fn open_audio_channel(&mut self) -> Result<bool, Error> {
-        if self.client.is_some() {
+        if self.is_audio_channel_opened() && self.client.is_some() {
             info!("Audio channel already opened,so closing it first");
             self.close_audio_channel()?;
         }
@@ -322,9 +325,12 @@ impl Protocol for WebSocketProtocol {
     }
 
     fn close_audio_channel(&mut self) -> Result<(), Error> {
-        if let Some(_) = self.client.take() {
-            //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。
+        if self.is_connected {
+            if let Some(_) = self.client.take() {
+                //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。
+            }
         }
+
         self.is_connected = false;
         *self.last_incoming_time.lock().unwrap() = None;
 

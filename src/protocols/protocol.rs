@@ -23,6 +23,8 @@ pub trait Protocol {
 
     fn is_timeout(&self) -> bool;
 
+    fn set_connected(&mut self, connected: bool);
+
     fn is_audio_channel_opened(&self) -> bool;
 
     fn send_abort_speaking(&mut self, reason: AbortReason) -> Result<(), Error>;

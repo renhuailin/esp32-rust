@@ -681,22 +681,10 @@ impl Application {
                                 }
                             }
                         }
-                        // XzEvent::WebSocketConnected => {
-                        //     info!("Connected,try to send hello message");
-                        //     // // send client hello message
-                        //     // if let Some(client) = &mut self.client {
-                        //     //     if client.is_connected() {
-                        //     //         let hello_message = ClientHelloMessage::new().unwrap();
-                        //     //         info!("Worker thread: Sending hello message...");
-                        //     //         match client.send(FrameType::Text(false), hello_message.as_bytes()) {
-                        //     //             Ok(_) => info!("Worker thread: Hello message sent!"),
-                        //     //             Err(e) => info!("Worker thread: Send error: {:?}", e),
-                        //     //         }
-                        //     //     } else {
-                        //     //         info!("Worker thread: Client not connected, cannot send.");
-                        //     //     }
-                        //     // }
-                        // }
+                        AppEvent::WebSocketConnected => {
+                            info!("Connected,try to send hello message");
+                            self.protocol.send_hello_message();
+                        }
                         AppEvent::WebSocketClosed => {
                             info!("WebSocketClosed");
                             // board.SetPowerSaveMode(true);
@@ -800,11 +788,20 @@ impl Application {
                                         //         } else {
                                         //             ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
                                         //         } });
+
+                                        if message_type == "hello" {
+                                            self.protocol.set_connected(true);
+                                        }
+
                                         if message_type == "tts" {
                                             if let Some(state) = message["state"].as_str() {
                                                 if state == "start" {
                                                     // TODO:: 研究一下 aborted 是干什么的
                                                     // self.aborted = false;
+                                                    info!(
+                                                        "处理文本消息开始: {} 当前状态: {:?}",
+                                                        text, self.state
+                                                    );
                                                     if self.state == DeviceState::Idle
                                                         || self.state == DeviceState::Listening
                                                     {

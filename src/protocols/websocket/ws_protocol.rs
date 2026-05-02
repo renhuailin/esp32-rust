@@ -155,7 +155,12 @@ impl Protocol for WebSocketProtocol {
     fn open_audio_channel(&mut self) -> Result<bool, Error> {
         if self.is_audio_channel_opened() && self.client.is_some() {
             info!("Audio channel already opened,so closing it first");
-            self.close_audio_channel()?;
+            match self.close_audio_channel() {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Error closing audio channel: {:?}", e);
+                }
+            }
         }
 
         let header = format!(
@@ -185,6 +190,7 @@ impl Protocol for WebSocketProtocol {
 
         *self.server_hello_received.lock().unwrap() = false;
         let server_hello_received = self.server_hello_received.clone();
+
         self.client = Some(Box::new(EspWebSocketClient::new(
             ws_url,
             &config,
@@ -246,7 +252,7 @@ impl Protocol for WebSocketProtocol {
 
                         WebSocketEventType::Binary(binary) => {
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
-                            // // info!("Websocket recv, binary: {binary:?}");
+                            // info!("Websocket recv, binary len: {}", binary.len());
                             let packet = AudioStreamPacket {
                                 sample_rate: 16000,
                                 frame_duration: 60,
@@ -439,7 +445,9 @@ impl Protocol for WebSocketProtocol {
 
 impl Drop for WebSocketProtocol {
     fn drop(&mut self) {
-        let _ = self.close_audio_channel();
+        if let Err(err) = self.close_audio_channel() {
+            error!("WebSocketProtocol: Close audio channel error: {:?}", err);
+        }
     }
 }
 

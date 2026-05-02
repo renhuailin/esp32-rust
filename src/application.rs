@@ -567,7 +567,7 @@ impl Application {
         info!("启动音频输出线程 start pcm_player_thread ...");
         if let Some(pcm_rx) = self.inner_pcm_rx.take() {
             ThreadSpawnConfiguration {
-                name: Some(b"pcm_player_thread\0"),
+                name: Some(c"pcm_player_thread"),
                 stack_size: 8 * 1024,
                 priority: 10,
                 pin_to_core: Some(1.into()), // 绑定到 Core 1
@@ -1546,7 +1546,7 @@ fn start_audio_input(
             //     bytes_to_i16_result[2],
             //     bytes_to_i16_result[3]
             // );
-            info!("Feed 数据 前 - 内容: {} ", bytes_to_i16_result.len());
+            // info!("Feed 数据 前 - 内容: {} ", bytes_to_i16_result.len());
             audio_processor.lock().unwrap().feed(&bytes_to_i16_result);
             // let duration = start.elapsed();
             // info!("Feed 数据 耗时: {:?}", duration);

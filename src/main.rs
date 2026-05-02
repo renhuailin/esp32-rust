@@ -6,6 +6,7 @@ use esp_idf_hal::i2s::config::{
     TdmSlotMask,
 };
 use esp_idf_hal::i2s::I2sTx;
+use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::task::asynch::Notification;
 use esp_idf_hal::task::block_on;
 use esp_idf_hal::task::thread::ThreadSpawnConfiguration;
@@ -18,11 +19,10 @@ use esp_idf_hal::{
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
-    prelude::*,
     rmt::RmtChannel,
     spi::SpiDriver,
+    units::*,
 };
-use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io;
 use esp_idf_svc::ota::{EspFirmwareInfoLoad, EspOta, EspOtaUpdate, FirmwareInfo};
@@ -56,7 +56,7 @@ use xiaoxin_esp32::application::Application;
 use xiaoxin_esp32::audio::codec::es7210::es7210::Es7210;
 use xiaoxin_esp32::audio::codec::es8311::Es8311;
 use xiaoxin_esp32::audio::codec::opus::decoder::OpusAudioDecoder;
-use xiaoxin_esp32::common::{button, gpio_button};
+use xiaoxin_esp32::common::gpio_button;
 use xiaoxin_esp32::utils::ffi::c_task_trampoline;
 use xiaoxin_esp32::wifi::wifi_driver::{Esp32WifiDriver, WifiStation};
 use xiaoxin_esp32::{

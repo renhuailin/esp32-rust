@@ -1,10 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Error, Ok, Result};
-use esp_idf_hal::peripheral::Peripheral;
+use esp_idf_hal::modem::WifiModemPeripheral;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::peripheral,
     http::server::EspHttpServer,
     ipv4::IpInfo,
     nvs::{EspCustomNvsPartition, EspNvsPartition, NvsCustom},
@@ -68,7 +67,7 @@ pub struct Esp32WifiDriver {
 
 impl Esp32WifiDriver {
     pub fn new(
-        modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
+        modem: impl WifiModemPeripheral + 'static,
         sysloop: EspSystemEventLoop,
     ) -> Result<Self> {
         let esp_wifi = EspWifi::new(modem, sysloop.clone(), None)?;
@@ -281,7 +280,7 @@ impl WifiAP for Esp32WifiDriver {
 pub fn wifi(
     ssid: &str,
     pass: &str,
-    modem: impl peripheral::Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'static,
+    modem: impl WifiModemPeripheral + 'static,
     sysloop: EspSystemEventLoop,
 ) -> Result<Box<EspWifi<'static>>> {
     let mut auth_method = AuthMethod::WPA2Personal;
@@ -357,7 +356,7 @@ pub fn wifi(
 /// `ssid`: 热点名称
 /// `password`: 热点密码 (如果为空，则为开放网络)
 pub fn start_ap<'a>(
-    modem: impl Peripheral<P = esp_idf_svc::hal::modem::Modem> + 'a,
+    modem: impl WifiModemPeripheral + 'a,
     sysloop: EspSystemEventLoop,
     ssid: &str,
     password: &str,

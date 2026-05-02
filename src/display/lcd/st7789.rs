@@ -7,28 +7,28 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
+use esp_idf_hal::gpio::*;
 use esp_idf_hal::{
     delay::Delay,
     gpio::{self, PinDriver},
     ledc::LedcDriver,
-    prelude::*,
     spi::{SpiConfig, SpiDeviceDriver, SpiDriver},
+    units::*,
 };
 use mipidsi::{Builder, ColorOrder, Orientation};
 use u8g2_fonts::U8g2TextStyle;
-
 // 1. 定义具体的硬件类型别名，方便阅读
 type ConcreteSpiDriver = SpiDeviceDriver<'static, SpiDriver<'static>>;
-type ConcreteDcPin = PinDriver<'static, gpio::AnyOutputPin, gpio::Output>;
-type ConcreteRstPin = PinDriver<'static, gpio::AnyIOPin, gpio::Output>;
+type ConcreteDcPin<'a> = PinDriver<'a, Output>;
+type ConcreteRstPin<'a> = PinDriver<'a, InputOutput>;
 
 // 2. 定义显示接口类型
-type DisplayInterface = SPIInterfaceNoCS<ConcreteSpiDriver, ConcreteDcPin>;
+type DisplayInterface<'a> = SPIInterfaceNoCS<ConcreteSpiDriver, ConcreteDcPin<'a>>;
 
 // 3. 定义最终的 Display 类型
 // 注意：mipidsi::Display<接口, 型号, 复位引脚>
 pub type St7789Display =
-    mipidsi::Display<DisplayInterface, mipidsi::models::ST7789, ConcreteRstPin>;
+    mipidsi::Display<DisplayInterface<'static>, mipidsi::models::ST7789, ConcreteRstPin<'static>>;
 
 pub struct LcdSt7789 {
     display: St7789Display,
@@ -38,8 +38,8 @@ pub struct LcdSt7789 {
 impl LcdSt7789 {
     pub fn new(
         driver: SpiDriver<'static>, // 注意这里改为 'static
-        dc_pin: gpio::AnyOutputPin,
-        chip_select_pin: gpio::AnyOutputPin,
+        dc_pin: gpio::AnyOutputPin<'static>,
+        chip_select_pin: gpio::AnyOutputPin<'static>,
         mut ledc_driver: LedcDriver<'static>,
     ) -> Result<Self> {
         // --- SPI 配置 ---
@@ -105,8 +105,8 @@ impl LcdSt7789 {
 
     pub fn init(
         driver: SpiDriver<'_>,
-        dc_pin: gpio::AnyOutputPin,
-        chip_select_pin: gpio::AnyOutputPin,
+        dc_pin: gpio::AnyOutputPin<'static>,
+        chip_select_pin: gpio::AnyOutputPin<'static>,
     ) {
         // let pins = peripherals.pins;
         // let spi3 = peripherals.spi3;
@@ -150,18 +150,16 @@ impl LcdSt7789 {
 
         // // 创建显示接口
         // let di = SPIInterface::new(spi_device, dc, cs);
-        let dc =
-            PinDriver::<gpio::AnyOutputPin, esp_idf_hal::gpio::Output>::output(dc_pin).unwrap();
+        let dc = PinDriver::<'static, esp_idf_hal::gpio::Output>::output(dc_pin).unwrap();
         let di = SPIInterfaceNoCS::new(spi_device, dc);
 
         let mut delay = Delay::new_default();
-        let reset_pin: Option<
-            esp_idf_hal::gpio::PinDriver<gpio::AnyIOPin, esp_idf_hal::gpio::Output>,
-        > = None;
+        let reset_pin: Option<esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>> =
+            None;
         let mut display: mipidsi::Display<
             _,
             _,
-            esp_idf_hal::gpio::PinDriver<gpio::AnyIOPin, esp_idf_hal::gpio::Output>,
+            esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>,
         > = Builder::st7789(di)
             .with_color_order(ColorOrder::Rgb)
             .init(&mut delay, reset_pin)

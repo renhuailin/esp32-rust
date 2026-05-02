@@ -12,9 +12,9 @@ use esp_idf_hal::{
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
-    peripheral,
-    prelude::{Peripherals, *},
+    peripherals::Peripherals,
     spi::SpiDriver,
+    units::*,
 };
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use log::{error, info};

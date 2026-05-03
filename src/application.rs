@@ -13,6 +13,7 @@ use std::{
     ffi::{c_void, CStr},
     ptr,
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, channel, Receiver, Sender, SyncSender},
         Arc, Mutex, MutexGuard,
     },
@@ -34,10 +35,7 @@ use crate::{
             opus::{decoder::OpusAudioDecoder, encoder::OpusAudioEncoder},
             MAX_AUDIO_PACKETS_IN_QUEUE, OPUS_FRAME_DURATION_MS,
         },
-        processor::{
-            afe_audio_processor::AfeAudioProcessor, audio_processor::AudioProcessor,
-            no_audio_processor::NoAudioProcessor,
-        },
+        processor::{audio_processor::AudioProcessor, no_audio_processor::NoAudioProcessor},
     },
     boards::{board::Board, jianglian_s3cam_board},
     common::{
@@ -68,15 +66,24 @@ pub type AudioBuffer = VecDeque<u8>;
 pub struct SharedAudioState {
     pub buffer: Mutex<AudioBuffer>,
     pub audio_packet_buffer: Mutex<VecDeque<AudioStreamPacket>>, // 我们可以添加一个Condvar，以便在录音满或播放空时进行等待
-    pub pcm_buffer: Mutex<VecDeque<i16>>,                        //用于回放的pcm数据buffer
+
+    pub pcm_buffer: Mutex<VecDeque<i16>>, //用于回放的pcm数据buffer
+
+    audio_decode_queue: Mutex<VecDeque<AudioStreamPacket>>, //待解码的音频队列
+    busy_decoding_audio: AtomicBool, //正在解码音频,TODO:: 在c++代码中，如果正在解码音频，则不播放音频
 }
 
 impl SharedAudioState {
     pub fn new() -> Self {
+        let audio_decode_queue = Mutex::new(VecDeque::<AudioStreamPacket>::with_capacity(
+            MAX_AUDIO_PACKETS_IN_QUEUE,
+        ));
         Self {
             buffer: Mutex::new(VecDeque::new()),
             audio_packet_buffer: Mutex::new(VecDeque::new()),
             pcm_buffer: Mutex::new(VecDeque::new()),
+            audio_decode_queue,
+            busy_decoding_audio: false.into(),
         }
     }
 }
@@ -224,8 +231,6 @@ pub struct Application {
 
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待发送的音频队列
-    audio_decode_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待解码的音频队列
-    busy_decoding_audio: Arc<Mutex<bool>>, //正在解码音频,TODO:: 在c++代码中，如果正在解码音频，则不播放音频
 
     decode_task_sender: Sender<AppEvent>,
     decode_task_receiver: Option<Receiver<AppEvent>>,
@@ -279,9 +284,6 @@ impl Application {
 
         //待发送的音频队列
         let audio_packet_queue = Arc::new(Mutex::new(
-            VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
-        ));
-        let audio_decode_queue = Arc::new(Mutex::new(
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
@@ -342,8 +344,6 @@ impl Application {
             listening_mode: ListeningMode::AutoStop,
             audio_processor: audio_processor,
             audio_packet_queue,
-            audio_decode_queue,
-            busy_decoding_audio: Arc::new(Mutex::new(false)),
             audio_test_mode: false,
             shared_audio_state,
             opus_decoder,
@@ -526,9 +526,11 @@ impl Application {
                     error!("Failed to send PCM to encoder: {:?}", e);
                 }
             }));
+        let pcm_tx = self.inner_pcm_tx.clone();
+        let audio_state = Arc::clone(&self.shared_audio_state);
 
         let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
-            audio_loop(codec_clone, audio_processor);
+            audio_loop(codec_clone, audio_processor, audio_state, pcm_tx);
         });
 
         let closure_box = Box::new(task_closure);
@@ -555,7 +557,7 @@ impl Application {
         }
 
         info!("启动解码线程 start_output_audio ...");
-        self.start_output_audio();
+        // self.start_output_audio();
 
         self.set_device_state(DeviceState::Idle);
 
@@ -563,7 +565,7 @@ impl Application {
 
         let pcm_player_codec = Arc::clone(&codec_for_opus_player);
 
-        //启动音频输出线程
+        //启动音频输出子线程
         info!("启动音频输出线程 start pcm_player_thread ...");
         if let Some(pcm_rx) = self.inner_pcm_rx.take() {
             ThreadSpawnConfiguration {
@@ -683,7 +685,9 @@ impl Application {
                         }
                         AppEvent::WebSocketConnected => {
                             info!("Connected,try to send hello message");
-                            self.protocol.send_hello_message();
+                            if let Err(err) = self.protocol.send_hello_message() {
+                                error!("Failed to send hello message: {:?}", err);
+                            }
                         }
                         AppEvent::WebSocketClosed => {
                             info!("WebSocketClosed");
@@ -886,22 +890,22 @@ impl Application {
                                         < MAX_AUDIO_PACKETS_IN_QUEUE
                                 {
                                     // 在子线程中处理音频解码
-                                    // let mut audio_decode_queue =
-                                    //     self.audio_decode_queue.lock().unwrap();
-                                    // audio_decode_queue.push_back(audio_stream_packet);
+                                    let mut audio_decode_queue =
+                                        self.shared_audio_state.audio_decode_queue.lock().unwrap();
+                                    audio_decode_queue.push_back(audio_stream_packet);
 
-                                    match self
-                                        .decode_task_sender
-                                        .clone()
-                                        .send(AppEvent::AudioPacketReceived(audio_stream_packet))
-                                    {
-                                        Ok(_) => {
-                                            // info!("send audio decode event ok");
-                                        }
-                                        Err(e) => {
-                                            error!("send audio decode event error: {:?}", e);
-                                        }
-                                    }
+                                    // match self
+                                    //     .decode_task_sender
+                                    //     .clone()
+                                    //     .send(AppEvent::AudioPacketReceived(audio_stream_packet))
+                                    // {
+                                    //     Ok(_) => {
+                                    //         // info!("send audio decode event ok");
+                                    //     }
+                                    //     Err(e) => {
+                                    //         error!("send audio decode event error: {:?}", e);
+                                    //     }
+                                    // }
 
                                     // // 在主线程中处理音频数据包
                                     // match codec_for_opus_player.lock().unwrap().play_opus(
@@ -1239,7 +1243,11 @@ impl Application {
         // codec->EnableOutput(true);
 
         self.opus_decoder.lock().unwrap().reset_state();
-        self.audio_decode_queue.lock().unwrap().clear();
+        self.shared_audio_state
+            .audio_decode_queue
+            .lock()
+            .unwrap()
+            .clear();
         // self.audio_decode_cv.lock().unwrap().notify_all();
         // self.last_output_time = Instant::now();
         self.board
@@ -1378,6 +1386,8 @@ impl Application {
 fn audio_loop(
     audio_codec: Arc<Mutex<dyn AudioCodec>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
+    share_audio_state: Arc<SharedAudioState>,
+    inner_pcm_tx: SyncSender<Vec<u8>>,
 ) {
     // let mut codec = audio_codec.lock().unwrap();
     // codec.set_output_volume(50);
@@ -1389,8 +1399,24 @@ fn audio_loop(
     // info!("application: feed_size: {}", feed_size);
     // const READ_CHUNK_SIZE: usize = 1024;
     let mut read_buffer = vec![0u8; feed_size];
-    // let mut read_buffer = vec![0u8; 1024];
+
+    let mut shared_decode_buffer: Vec<i16> = Vec::with_capacity(4096);
+    let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
+
+    let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
+    let channels = 2; //# 单声道
+    let mut opus_decoder = OpusAudioDecoder::new(
+        sample_rate,
+        channels,
+        OPUS_FRAME_DURATION_MS.try_into().unwrap(),
+    )
+    .unwrap();
+
+    let mut cache_packet_count: i32 = 0;
+
     loop {
+        let pcm_tx = inner_pcm_tx.clone();
+        let audio_state = share_audio_state.clone();
         start_audio_input(
             Arc::clone(&audio_codec),
             audio_processor_arc.clone(),
@@ -1399,7 +1425,18 @@ fn audio_loop(
 
         let codec_arc = Arc::clone(&audio_codec);
         if codec_arc.lock().unwrap().output_enabled() {
-            start_audio_output(codec_arc, audio_processor_arc.clone());
+            start_audio_output(
+                // codec_arc,
+                // audio_processor_arc.clone(),
+                audio_state,
+                &mut opus_decoder,
+                &mut shared_decode_buffer,
+                // &mut pcm_buffer,
+                pcm_tx,
+                // &mut cache_packet_count,
+            );
+        } else {
+            info!("application: output_enabled: false");
         }
 
         // thread::sleep(Duration::from_millis(10));
@@ -1407,11 +1444,76 @@ fn audio_loop(
 }
 
 fn start_audio_output(
-    codec_arc: Arc<Mutex<dyn AudioCodec + 'static>>,
-    audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
+    // codec_arc: Arc<Mutex<dyn AudioCodec + 'static>>,
+    // audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
+    share_audio_state: Arc<SharedAudioState>,
+    opus_decoder: &mut OpusAudioDecoder,
+    decode_buffer: &mut Vec<i16>,
+    // pcm_buffer: &mut Vec<u8>,
+    pcm_sender: SyncSender<Vec<u8>>,
 ) {
-    info!("application: start_audio_output");
+    // info!("application: start_audio_output");
+
+    // If app is busy decoding audio, return
+    if share_audio_state.busy_decoding_audio.load(Ordering::SeqCst) {
+        info!("application: busy_decoding_audio: true");
+        return;
+    }
+
+    if share_audio_state
+        .audio_decode_queue
+        .lock()
+        .unwrap()
+        .is_empty()
+    {
+        // info!("application: audio_decode_queue is empty");
+        return;
+    }
+
+    // let packet = share_audio_state
+    //     .audio_decode_queue
+    //     .lock()
+    //     .unwrap()
+    //     .pop_front();
+
+    let packets = {
+        let mut queue = share_audio_state.audio_decode_queue.lock().unwrap();
+        // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
+        // 这完全等同于 C++ 的 std::move
+        std::mem::take(&mut *queue)
+    };
+    for packet in packets {
+        // if let Some(packet) = packet {
+        share_audio_state
+            .busy_decoding_audio
+            .store(true, Ordering::SeqCst);
+        info!("application: got packet from audio_decode_queue");
+        match decode_opus_audio(
+            // codec.clone(),
+            opus_decoder,
+            packet.payload,
+            decode_buffer,
+        ) {
+            Ok(pcm_data) => {
+                match pcm_sender.send(pcm_data) {
+                    Ok(_) => {
+                        // info!("Send pcm data success.");
+                    }
+                    Err(e) => {
+                        error!("Send decoded opus data(pcm data) error: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to decode audio: {}", e);
+            }
+        }
+        share_audio_state
+            .busy_decoding_audio
+            .store(false, Ordering::SeqCst);
+    }
 }
+
 fn start_audio_input(
     codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,

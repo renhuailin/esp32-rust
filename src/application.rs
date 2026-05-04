@@ -24,7 +24,8 @@ use std::{
 use esp_idf_sys::{
     esp_partition_find, esp_partition_get, esp_partition_next,
     esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
-    esp_partition_type_t_ESP_PARTITION_TYPE_APP,
+    esp_partition_type_t_ESP_PARTITION_TYPE_APP, i2s_port_t_I2S_NUM_0, i2s_start, i2s_stop,
+    i2s_zero_dma_buffer,
 };
 use log::{error, info, warn};
 
@@ -71,6 +72,7 @@ pub struct SharedAudioState {
 
     audio_decode_queue: Mutex<VecDeque<AudioStreamPacket>>, //待解码的音频队列
     busy_decoding_audio: AtomicBool, //正在解码音频,TODO:: 在c++代码中，如果正在解码音频，则不播放音频
+    abort_speaking: AtomicBool,      //是否中断speaking
 }
 
 impl SharedAudioState {
@@ -84,6 +86,7 @@ impl SharedAudioState {
             pcm_buffer: Mutex::new(VecDeque::new()),
             audio_decode_queue,
             busy_decoding_audio: false.into(),
+            abort_speaking: false.into(),
         }
     }
 }
@@ -664,7 +667,7 @@ impl Application {
                                     .unwrap()
                                     .test_play_pcm(pcm_u8)
                                     .unwrap();
-                                continue;
+                                // continue;
 
                                 // thread::sleep(Duration::from_millis(1000 * 5));
 
@@ -800,8 +803,9 @@ impl Application {
                                         if message_type == "tts" {
                                             if let Some(state) = message["state"].as_str() {
                                                 if state == "start" {
-                                                    // TODO:: 研究一下 aborted 是干什么的
-                                                    // self.aborted = false;
+                                                    self.shared_audio_state
+                                                        .abort_speaking
+                                                        .store(false, Ordering::SeqCst);
                                                     info!(
                                                         "处理文本消息开始: {} 当前状态: {:?}",
                                                         text, self.state
@@ -819,9 +823,13 @@ impl Application {
                                                         text, self.state
                                                     );
 
-                                                    self.decode_task_sender
-                                                        .send(AppEvent::TTSStop)
-                                                        .unwrap();
+                                                    self.shared_audio_state
+                                                        .audio_decode_queue
+                                                        .lock()
+                                                        .unwrap()
+                                                        .clear();
+
+                                                    self.play_silence();
 
                                                     // TODO:: 看一下 background_task_ 在我们这里怎么实现，他的作用应该是等后台任务完成。
                                                     // background_task_->WaitForCompletion();
@@ -1125,9 +1133,7 @@ impl Application {
                 });
             }
             DeviceState::Speaking => {
-                if let Err(e) = self.protocol.send_abort_speaking(AbortReason::None) {
-                    error!("Failed to send abort speaking: {:?}", e);
-                }
+                self.abort_speaking(AbortReason::None);
             }
             DeviceState::Listening => {
                 info!("DeviceState::Listening - Closing audio channel...");
@@ -1381,6 +1387,31 @@ impl Application {
             }
         }
     }
+
+    fn abort_speaking(&mut self, reason: AbortReason) {
+        self.shared_audio_state
+            .abort_speaking
+            .store(true, Ordering::SeqCst);
+
+        if let Err(err) = self.protocol.send_abort_speaking(reason) {
+            error!("Failed to send abort speaking: {:?}", err);
+        }
+    }
+
+    fn play_silence(&mut self) {
+        // 建议 buffer 大小为 DMA buffer 的一到两倍，确保能填满硬件残留
+        const SILENCE_BUFFER: [u8; 2048] = [0u8; 2048];
+
+        let pcm_player_codec = self.board.get_audio_codec().clone();
+        // 喂入几帧静音数据，覆盖掉 DMA 里剩下的残留
+        for _ in 0..5 {
+            pcm_player_codec
+                .lock()
+                .unwrap()
+                .output_data(&SILENCE_BUFFER)
+                .unwrap();
+        }
+    }
 }
 
 fn audio_loop(
@@ -1401,7 +1432,7 @@ fn audio_loop(
     let mut read_buffer = vec![0u8; feed_size];
 
     let mut shared_decode_buffer: Vec<i16> = Vec::with_capacity(4096);
-    let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
+    // let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
 
     let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
     let channels = 2; //# 单声道
@@ -1412,7 +1443,7 @@ fn audio_loop(
     )
     .unwrap();
 
-    let mut cache_packet_count: i32 = 0;
+    // let mut cache_packet_count: i32 = 0;
 
     loop {
         let pcm_tx = inner_pcm_tx.clone();
@@ -1483,6 +1514,11 @@ fn start_audio_output(
         std::mem::take(&mut *queue)
     };
     for packet in packets {
+        if share_audio_state.abort_speaking.load(Ordering::SeqCst) {
+            info!("application: abort_speaking: true");
+            return;
+        }
+
         // if let Some(packet) = packet {
         share_audio_state
             .busy_decoding_audio

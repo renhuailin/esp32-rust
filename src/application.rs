@@ -687,10 +687,11 @@ impl Application {
                             }
                         }
                         AppEvent::WebSocketConnected => {
-                            info!("Connected,try to send hello message");
-                            if let Err(err) = self.protocol.send_hello_message() {
-                                error!("Failed to send hello message: {:?}", err);
-                            }
+                            // self.protocol.set_connected(true);
+                            // info!("Connected,try to send hello message");
+                            // if let Err(err) = self.protocol.send_hello_message() {
+                            //     error!("Failed to send hello message: {:?}", err);
+                            // }
                         }
                         AppEvent::WebSocketClosed => {
                             info!("WebSocketClosed");
@@ -797,7 +798,7 @@ impl Application {
                                         //         } });
 
                                         if message_type == "hello" {
-                                            self.protocol.set_connected(true);
+                                            // self.protocol.set_connected(true);
                                         }
 
                                         if message_type == "tts" {
@@ -1060,10 +1061,14 @@ impl Application {
                     "Listening state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+
                 if !self.audio_processor.lock().unwrap().is_running() {
                     if !self.protocol.is_connected() {
                         self.protocol.open_audio_channel().unwrap();
+
+                        // self.wait_for_audio_channel_opened();
                     }
+
                     self.protocol
                         .send_start_linstening(self.listening_mode.clone())
                         .unwrap();
@@ -1119,12 +1124,12 @@ impl Application {
 
             // match self.state {
             DeviceState::Idle => {
-                if !self.protocol.is_audio_channel_opened() {
-                    self.set_device_state(DeviceState::Connecting);
-                    if !self.protocol.open_audio_channel().unwrap_or(false) {
-                        return;
-                    }
-                }
+                // if !self.protocol.is_audio_channel_opened() {
+                //     self.set_device_state(DeviceState::Connecting);
+                //     if !self.protocol.open_audio_channel().unwrap_or(false) {
+                //         return;
+                //     }
+                // }
 
                 self.set_listening_mode(if self.aec_mode == AecMode::Off {
                     ListeningMode::AutoStop
@@ -1412,6 +1417,25 @@ impl Application {
                 .unwrap();
         }
     }
+
+    fn wait_for_audio_channel_opened(&mut self) {
+        info!("waiting for audio channel to be opened");
+        let mut timeout = 10 * 1000;
+        loop {
+            if self.protocol.is_connected() {
+                break;
+            } else {
+                let sleep_duration = 10;
+                thread::sleep(std::time::Duration::from_millis(sleep_duration));
+                timeout -= sleep_duration;
+                if timeout <= 0 {
+                    info!("wait_for_audio_channel_opened --- timeout!");
+                    break;
+                }
+            }
+        }
+        info!("wait_for_audio_channel_opened --- audio channel opened");
+    }
 }
 
 fn audio_loop(
@@ -1523,7 +1547,7 @@ fn start_audio_output(
         share_audio_state
             .busy_decoding_audio
             .store(true, Ordering::SeqCst);
-        info!("application: got packet from audio_decode_queue");
+        // info!("application: got packet from audio_decode_queue");
         match decode_opus_audio(
             // codec.clone(),
             opus_decoder,

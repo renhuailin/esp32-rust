@@ -20,7 +20,7 @@ use crate::protocols::websocket::message::ClientHelloMessage;
 pub struct WebSocketProtocol {
     client: Option<Box<EspWebSocketClient<'static>>>,
     internal_sender: Sender<AppEvent>,
-    internal_receiver: Receiver<AppEvent>,
+    internal_receiver: Option<Receiver<AppEvent>>,
     external_sender: Sender<AppEvent>,
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
@@ -52,7 +52,7 @@ impl WebSocketProtocol {
             device_id: device_id.to_string(),
             is_connected: false,
             internal_sender: inner_sender,
-            internal_receiver: inner_receiver,
+            internal_receiver: Some(inner_receiver),
             external_sender: sender,
             on_incoming_text: None,
             on_incoming_audio: None,
@@ -163,6 +163,8 @@ impl Protocol for WebSocketProtocol {
             }
         }
 
+        self.is_connected = false;
+
         let header = format!(
             "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
             self.device_id, self.device_id
@@ -204,7 +206,13 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Connected => {
                             info!("Websocket connected");
-                            external_sender.send(AppEvent::WebSocketConnected).unwrap();
+                            // external_sender.send(AppEvent::WebSocketConnected).unwrap();
+                            match inner_sender.send(AppEvent::WebSocketConnected) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("Error sending audio data: {:?}", e);
+                                }
+                            }
                         }
                         WebSocketEventType::Disconnected => {
                             // info!("Websocket disconnected");
@@ -224,24 +232,24 @@ impl Protocol for WebSocketProtocol {
                         WebSocketEventType::Text(text) => {
                             info!("Websocket received a text message, text: {text}");
 
-                            // if !*server_hello_received.lock().unwrap() {
-                            //     let message: serde_json::Value =
-                            //         serde_json::from_str(text).unwrap();
-                            //     if let Some(message_type) = message["type"].as_str() {
-                            //         if message_type == "hello" {
-                            //             inner_sender
-                            //                 .send(AppEvent::ServerHelloMessageReceived(
-                            //                     text.to_string(),
-                            //                 ))
-                            //                 .unwrap();
-                            //             *server_hello_received.lock().unwrap() = true;
-                            //         }
-                            //     }
-                            // } else {
-                            external_sender
-                                .send(AppEvent::WebsocketTextMessageReceived(text.to_string()))
-                                .unwrap();
-                            // }
+                            if !*server_hello_received.lock().unwrap() {
+                                let message: serde_json::Value =
+                                    serde_json::from_str(text).unwrap();
+                                if let Some(message_type) = message["type"].as_str() {
+                                    if message_type == "hello" {
+                                        inner_sender
+                                            .send(AppEvent::ServerHelloMessageReceived(
+                                                text.to_string(),
+                                            ))
+                                            .unwrap();
+                                        *server_hello_received.lock().unwrap() = true;
+                                    }
+                                }
+                            } else {
+                                external_sender
+                                    .send(AppEvent::WebsocketTextMessageReceived(text.to_string()))
+                                    .unwrap();
+                            }
 
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
                         }
@@ -273,53 +281,57 @@ impl Protocol for WebSocketProtocol {
 
         // // info!("wait for server hello message");
         // // wait for server hello message
-        // let receiver = self.internal_receiver;
+        let receiver = self.internal_receiver.take();
 
-        // loop {
-        //     info!("WebSocketProtocol: Waiting for server hello message...");
-        //     match rx.recv() {
-        //         Ok(event) => {
-        //             match event {
-        //                 AppEvent::WebSocketConnected => {
-        //                     // debug!("Connected,try to send hello message");
-        //                     // send client hello message
-        //                     if let Some(client) = &mut self.client {
-        //                         if client.is_connected() {
-        //                             // send client hello message
-        //                             let hello_message = ClientHelloMessage::new().unwrap();
-        //                             debug!("WebSocketProtocol: Sending hello message...");
-        //                             match client
-        //                                 .send(FrameType::Text(false), hello_message.as_bytes())
-        //                             {
-        //                                 Ok(_) => {
-        //                                     debug!("WebSocketProtocol: Hello message sent!")
-        //                                 }
-        //                                 Err(e) => {
-        //                                     error!("WebSocketProtocol: Send error: {:?}", e)
-        //                                 }
-        //                             }
-        //                         } else {
-        //                             error!("WebSocketProtocol: Client not connected, cannot send.");
-        //                         }
-        //                     }
-        //                     // break;
-        //                 }
-        //                 AppEvent::ServerHelloMessageReceived(_) => {
-        //                     // info!("WebSocketProtocol: Server hello message received. {}", text);
-        //                     // self.parse_server_hello_message(text);
-        //                     break;
-        //                 }
-        //                 _ => todo!(),
-        //             }
-        //         }
-        //         Err(e) => {
-        //             error!("websocket error: {:?}", e);
-        //         }
-        //     }
-        // }
+        if let Some(rx) = receiver {
+            loop {
+                info!("WebSocketProtocol: Waiting for server hello message...");
+                match rx.recv() {
+                    Ok(event) => {
+                        match event {
+                            AppEvent::WebSocketConnected => {
+                                // debug!("Connected,try to send hello message");
+                                // send client hello message
+                                if let Some(client) = &mut self.client {
+                                    if client.is_connected() {
+                                        // send client hello message
+                                        let hello_message = ClientHelloMessage::new().unwrap();
+                                        debug!("WebSocketProtocol: Sending hello message...");
+                                        match client
+                                            .send(FrameType::Text(false), hello_message.as_bytes())
+                                        {
+                                            Ok(_) => {
+                                                debug!("WebSocketProtocol: Hello message sent!")
+                                            }
+                                            Err(e) => {
+                                                error!("WebSocketProtocol: Send error: {:?}", e)
+                                            }
+                                        }
+                                    } else {
+                                        error!(
+                                            "WebSocketProtocol: Client not connected, cannot send."
+                                        );
+                                    }
+                                }
+                                // break;
+                            }
+                            AppEvent::ServerHelloMessageReceived(_) => {
+                                // info!("WebSocketProtocol: Server hello message received. {}", text);
+                                // self.parse_server_hello_message(text);
+                                break;
+                            }
+                            _ => todo!(),
+                        }
+                    }
+                    Err(e) => {
+                        error!("websocket error: {:?}", e);
+                    }
+                }
+            }
+        }
 
         info!("ws protocol is connected.");
-        self.is_connected = false;
+        self.is_connected = true;
 
         Ok(true)
     }
@@ -436,76 +448,16 @@ impl Protocol for WebSocketProtocol {
         self.on_network_error = Some(Box::new(handler));
     }
 
-    fn set_connected(&mut self, connected: bool) {
-        self.is_connected = connected;
-    }
+    // fn set_connected(&mut self, connected: bool) {
+    //     info!("WebSocket connection status changed: {}", connected);
+    //     self.is_connected = connected;
+    // }
 }
 
 impl Drop for WebSocketProtocol {
     fn drop(&mut self) {
         if let Err(err) = self.close_audio_channel() {
             error!("WebSocketProtocol: Close audio channel error: {:?}", err);
-        }
-    }
-}
-
-fn handle_event(
-    event: &Result<WebSocketEvent, EspIOError>,
-    internal_sender: Sender<AppEvent>,
-    sender: Sender<AppEvent>,
-) {
-    if let Ok(event) = event {
-        match event.event_type {
-            WebSocketEventType::BeforeConnect => {
-                info!("Websocket before connect");
-            }
-            WebSocketEventType::Connected => {
-                info!("Websocket connected");
-                internal_sender.send(AppEvent::WebSocketConnected).unwrap();
-                // tx.send(ExampleEvent::Connected).ok();
-                // sys_loop
-                //     .post::<CustomEvent>(&CustomEvent::WebSocketConnected, delay::BLOCK)
-                //     .unwrap();
-            }
-            WebSocketEventType::Disconnected => {
-                info!("Websocket disconnected");
-            }
-
-            WebSocketEventType::Close(reason) => {
-                info!("Websocket close, reason: {reason:?}");
-            }
-
-            WebSocketEventType::Closed => {
-                info!("Websocket closed");
-            }
-
-            WebSocketEventType::Text(text) => {
-                // info!("Websocket received a text message");
-                info!("Websocket received a text message, text: {text}");
-                sender
-                    .send(AppEvent::WebsocketTextMessageReceived(text.to_string()))
-                    .unwrap();
-                // let hello: serde_json::Value = serde_json::from_str(text).unwrap();
-                // info!("parse json success");
-            }
-
-            WebSocketEventType::Binary(binary) => {
-                // info!("Websocket recv, binary: {binary:?}");
-                let packet = AudioStreamPacket {
-                    sample_rate: 16000,
-                    frame_duration: 60,
-                    timestamp: 0,
-                    payload: binary.to_vec(),
-                };
-
-                sender.send(AppEvent::AudioPacketReceived(packet)).unwrap();
-            }
-            WebSocketEventType::Ping => {
-                info!("Websocket ping");
-            }
-            WebSocketEventType::Pong => {
-                info!("Websocket pong");
-            }
         }
     }
 }

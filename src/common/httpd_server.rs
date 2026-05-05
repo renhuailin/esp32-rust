@@ -1,6 +1,12 @@
+use std::sync::{Arc, Mutex};
+
 use embedded_svc::http::Headers;
 use esp_idf_hal::io::{Read, Write};
-use esp_idf_svc::http::{server::EspHttpServer, Method};
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    http::{server::EspHttpServer, Method},
+    wifi::{BlockingWifi, EspWifi},
+};
 use esp_idf_sys::esp_restart;
 use log::info;
 use serde::Deserialize;
@@ -8,10 +14,10 @@ use serde::Deserialize;
 use crate::wifi::ssid_manager::SsidMananger;
 
 pub fn create_server() -> anyhow::Result<EspHttpServer<'static>> {
-    const STACK_SIZE: usize = 10240;
+    const STACK_SIZE: usize = 32 * 1024;
     let server_configuration = esp_idf_svc::http::server::Configuration {
         stack_size: STACK_SIZE,
-        max_resp_headers: 4096,
+        max_resp_headers: 4 * 1024,
         ..Default::default()
     };
 
@@ -26,7 +32,11 @@ struct FormData<'a> {
     wifi_password: &'a str,
 }
 
-pub fn start_http_server(http_server: &mut EspHttpServer<'static>) -> anyhow::Result<()> {
+pub fn start_http_server(
+    http_server: &mut EspHttpServer<'static>,
+    wifi: Arc<Mutex<EspWifi<'static>>>,
+    sysloop: EspSystemEventLoop,
+) -> anyhow::Result<()> {
     // let mut http_server = create_server()?;
 
     http_server.fn_handler("/", Method::Get, |req| {
@@ -35,19 +45,26 @@ pub fn start_http_server(http_server: &mut EspHttpServer<'static>) -> anyhow::Re
             .map(|_| ())
     })?;
 
-    // http_server.fn_handler::<anyhow::Error, _>("/hello", Method::Get, |req| {
-    //     // req.into_ok_response()?
-    //     //     .write_all(INDEX_HTML.as_bytes())
-    //     //     .map(|_| ());
+    http_server.fn_handler::<anyhow::Error, _>("/scan_wifi_ssid", Method::Get, move |req| {
+        let mut esp_wifi = wifi.lock().unwrap();
+        let mut wifi = BlockingWifi::wrap(&mut *esp_wifi, sysloop.clone())?;
+        info!("get BlockingWifi ... ");
+        let mut resp = req.into_ok_response()?;
 
-    //     let mut resp = req.into_ok_response()?;
-    //     write!(
-    //         resp,
-    //         "SSID: {}  Password: {}!",
-    //         "wifi_ssid", "wifi_password"
-    //     )?;
-    //     Ok(())
-    // })?;
+        wifi.start()?;
+        info!("wifi.start ... ");
+        let ap_infos = wifi.scan()?;
+        info!("get ap_infos ... ");
+        let ap_names = ap_infos
+            .into_iter()
+            .map(|a| a.ssid.to_string())
+            .collect::<Vec<String>>();
+
+        info!("Available AP names: {:?}", ap_names);
+
+        write!(resp, "{}", serde_json::to_string(&ap_names).unwrap())?;
+        Ok(())
+    })?;
 
     const MAX_LEN: usize = 2048;
     http_server.fn_handler::<anyhow::Error, _>("/config_wifi", Method::Post, |mut req| {

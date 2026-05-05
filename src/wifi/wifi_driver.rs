@@ -177,10 +177,41 @@ impl WifiStation for Esp32WifiDriver {
 
         let mut wifi = BlockingWifi::wrap(&mut *esp_wifi, self.sysloop.clone())?;
 
-        info!("Scanning...");
-
         wifi.start()?;
-        let ap_infos = wifi.scan()?;
+        // 显式断开，确保驱动不在连接尝试中
+        let _ = wifi.disconnect();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        unsafe {
+            log::info!(
+                "Free heap before scan: {}",
+                esp_idf_sys::esp_get_free_heap_size()
+            );
+        }
+        unsafe {
+            let config = esp_idf_sys::wifi_scan_config_t {
+                ssid: std::ptr::null_mut(),
+                bssid: std::ptr::null_mut(),
+                channel: 0,
+                show_hidden: false,
+                scan_type: esp_idf_sys::wifi_scan_type_t_WIFI_SCAN_TYPE_ACTIVE,
+                scan_time: esp_idf_sys::wifi_scan_time_t {
+                    active: esp_idf_sys::wifi_active_scan_time_t { min: 0, max: 0 },
+                    passive: 0,
+                },
+                home_chan_dwell_time: 0,
+                channel_bitmap: std::mem::zeroed(),
+            };
+            let err = esp_idf_sys::esp_wifi_scan_start(&config, true);
+            if err != 0 {
+                log::error!("底层 FFI 扫描报错代码: 0x{:x}", err);
+            }
+        }
+
+        let ap_infos = match wifi.scan() {
+            Result::Ok(ap_infos) => ap_infos,
+            Err(err) => bail!("Failed to scan access points: {}", err),
+        };
         let ap_names = ap_infos
             .into_iter()
             .map(|a| a.ssid.to_string())
@@ -261,7 +292,8 @@ impl WifiAP for Esp32WifiDriver {
         // };
 
         let mut http_server = create_server()?;
-        start_http_server(&mut http_server)?;
+
+        start_http_server(&mut http_server, self.wifi.clone(), self.sysloop.clone())?;
 
         // let on_new_access_point_add = &self.on_new_access_point_add;
 

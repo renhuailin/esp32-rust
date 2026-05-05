@@ -129,7 +129,7 @@ impl JiangLianS3CamBoard {
         let ws = pins.gpio40;
 
         // i2s_config
-        let mut i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
+        let i2s_driver = I2sDriver::<I2sBiDir>::new_std_bidir(
             peripherals.i2s0,
             &std_config,
             bclk,
@@ -266,7 +266,7 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
-        self.wifi_scan()?;
+        // // self.wifi_scan()?;
         // let wifi_connected = self.start_wifi_station()?;
         // if !wifi_connected {
         //     self.start_wifi_ap()?;
@@ -287,7 +287,14 @@ impl Board for JiangLianS3CamBoard {
         let ssid_manager = SsidMananger::get_instance();
 
         // scanning available access points
-        let available_ap_names = self.wifi_driver.get_available_access_points()?;
+        let available_ap_names = match self.wifi_driver.get_available_access_points() {
+            std::result::Result::Ok(aps) => aps,
+            Err(err) => {
+                log::error!("Scan failed with EspError: {:?}", err);
+                error!("Failed to get available access points: {}", err);
+                vec![]
+            }
+        };
         info!("Available AP names: {:?}", available_ap_names);
 
         // get saved ssid list
@@ -358,14 +365,15 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn start_network(&mut self) -> Result<()> {
-        self.wifi_scan()?;
+        info!("Start network");
 
-        // info!("Start network");
-        // let wifi_connected = self.start_wifi_station()?;
-        // if !wifi_connected {
-        //     self.wifi_config_mode = true;
-        //     self.start_wifi_ap()?;
-        // }
+        // self.wifi_scan()?;
+
+        let wifi_connected = self.start_wifi_station()?;
+        if !wifi_connected {
+            self.wifi_config_mode = true;
+            self.start_wifi_ap()?;
+        }
 
         Ok(())
     }

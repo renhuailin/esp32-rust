@@ -108,6 +108,14 @@ impl WifiStation for Esp32WifiDriver {
 
         let ap_infos = wifi.scan()?;
 
+        let ap_names = ap_infos
+            .clone()
+            .into_iter()
+            .map(|a| a.ssid.to_string())
+            .collect::<Vec<String>>();
+
+        info!("Available AP names: {:?}", ap_names);
+
         let ours = ap_infos.into_iter().find(|a| a.ssid == ssid);
 
         let channel = if let Some(ours) = ours {
@@ -304,6 +312,14 @@ pub fn wifi(
     info!("Scanning...");
 
     let ap_infos = wifi.scan()?;
+
+    let ap_names = ap_infos
+        .clone()
+        .into_iter()
+        .map(|a| a.ssid.to_string())
+        .collect::<Vec<String>>();
+
+    info!("Available AP names: {:?}", ap_names);
 
     let ours = ap_infos.into_iter().find(|a| a.ssid == ssid);
 

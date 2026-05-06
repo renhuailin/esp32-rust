@@ -37,7 +37,6 @@ use esp_idf_sys::{
     esp_partition_type_t_ESP_PARTITION_TYPE_APP, EspError,
 };
 use futures::{select, FutureExt};
-use mipidsi::error;
 use shared_bus::BusManagerSimple;
 use std::collections::VecDeque;
 use std::ffi::{c_void, CStr};
@@ -50,6 +49,7 @@ use xiaoxin_esp32::audio::codec::OPUS_FRAME_DURATION_MS;
 use xiaoxin_esp32::audio::processor::afe_audio_processor::AfeAudioProcessor;
 use xiaoxin_esp32::audio::processor::audio_processor::AudioProcessor;
 use xiaoxin_esp32::common::converter::{bytes_to_i16_slice, i16_slice_to_bytes};
+use xiaoxin_esp32::display::lcd::st7789::LcdSt7789;
 
 use log::{error, info, warn, LevelFilter};
 use xiaoxin_esp32::application::Application;
@@ -387,7 +387,7 @@ fn main1() -> Result<()> {
     )
     .unwrap();
 
-    lcd::LcdSt7789::init(driver, dc.into(), cs.into());
+    // LcdSt7789::new(driver, dc.into(), cs.into());
 
     //关闭背光
 

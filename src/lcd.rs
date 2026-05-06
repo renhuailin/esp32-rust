@@ -7,101 +7,18 @@ use embedded_graphics::{
 };
 use esp_idf_hal::{
     delay::Delay,
-    gpio::PinDriver,
+    gpio::{Output, PinDriver},
     spi::{SpiAnyPins, SpiDeviceDriver, SpiDriver},
     units::*,
 };
 use esp_idf_hal::{gpio, spi::SpiConfig};
 // 删除错误的导入
-use mipidsi::{Builder, ColorOrder, Orientation};
-
-pub struct LcdSt7789;
-
-impl LcdSt7789 {
-    pub fn init(
-        driver: SpiDriver<'_>,
-        dc_pin: gpio::AnyOutputPin<'static>,
-        chip_select_pin: gpio::AnyOutputPin<'static>,
-    ) {
-        // let pins = peripherals.pins;
-        // let spi3 = peripherals.spi3;
-
-        // // 2. 根据 diagram.json 配置引脚
-        // // 控制引脚
-        // // #define DISPLAY_MOSI_PIN      GPIO_NUM_4
-        // // #define DISPLAY_CLK_PIN       GPIO_NUM_5
-        // // #define DISPLAY_DC_PIN        GPIO_NUM_7
-        // // #define DISPLAY_RST_PIN       GPIO_NUM_NC
-        // // #define DISPLAY_CS_PIN        GPIO_NUM_6
-        // let dc =
-        //     PinDriver::<esp_idf_hal::gpio::Gpio7, esp_idf_hal::gpio::Output>::output(pins.gpio7)
-        //         .unwrap();
-
-        // // SPI 总线引脚 (使用硬件 SPI2)
-        // let sck = pins.gpio5;
-        // let sdi = pins.gpio4; // MOSI 在驱动中通常被称为 SDI (Serial Data In)
-        // let sdo = Option::<esp_idf_hal::gpio::Gpio13>::None; // MISO
-        // let cs = pins.gpio6; // 直接使用引脚，而不是PinDriver
-
-        // // 3. 初始化 SPI 驱动
-        // // 创建 SPI 驱动程序实例
-        // let driver = SpiDriver::new(
-        //     spi3, // 使用 SPI3
-        //     sck,
-        //     sdi,
-        //     sdo,
-        //     &Default::default(),
-        // )
-        // .unwrap();
-
-        // --- 步骤 2: 打开背光电源 ---
-
-        const RATE: u32 = 80 * 1000 * 1000;
-        // 创建一个 SPI 设备驱动，它包含了 CS 片选和通信速率等配置
-        let spi_config = SpiConfig::new().baudrate(RATE.Hz());
-        let spi_device = SpiDeviceDriver::new(driver, Some(chip_select_pin), &spi_config).unwrap();
-
-        println!("SPI 初始化完成!");
-
-        // // 创建显示接口
-        // let di = SPIInterface::new(spi_device, dc, cs);
-        let dc = PinDriver::<'static, esp_idf_hal::gpio::Output>::output(dc_pin).unwrap();
-        let di = SPIInterfaceNoCS::new(spi_device, dc);
-
-        let mut delay = Delay::new_default();
-        let reset_pin: Option<esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>> =
-            None;
-        let mut display: mipidsi::Display<
-            _,
-            _,
-            esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>,
-        > = Builder::st7789(di)
-            .with_color_order(ColorOrder::Rgb)
-            .init(&mut delay, reset_pin)
-            .unwrap(); // delay provider from your MCU
-        display
-            .set_orientation(Orientation::LandscapeInverted(true))
-            .unwrap();
-        display.clear(Rgb565::BLACK).unwrap();
-
-        // 创建一个文本样式
-        let style = MonoTextStyle::new(&FONT_8X13, Rgb565::WHITE);
-
-        // 创建文本对象
-        Text::new(
-            "Hello, Rust!!",
-            Point::new(30, 30), // 文本左上角在屏幕上的位置
-            style,
-        )
-        .draw(&mut display) // 绘制文本
-        .unwrap();
-
-        println!("'Hello, Rust!' 已经显示在 LCD 上。");
-
-        // display
-    }
-}
-
+use mipidsi::{
+    interface::SpiInterface,
+    models::ILI9341Rgb565,
+    options::{ColorInversion, Orientation, Rotation},
+    Builder,
+};
 pub struct LcdIli9341;
 
 pub struct SPIConfig<T: SpiAnyPins> {
@@ -151,22 +68,33 @@ impl LcdIli9341 {
         // // 创建显示接口
         // let di = SPIInterface::new(spi_device, dc, cs);
 
-        let di = SPIInterfaceNoCS::new(spi_device, dc);
+        let buffer = [0_u8; 512];
+        let box_buffer = Box::new(buffer);
 
+        let static_buffer = Box::leak(box_buffer);
+        let di = SpiInterface::new(spi_device, dc, static_buffer);
         let mut delay = Delay::new_default();
         let reset_pin: Option<esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>> =
             Some(rst);
+        // let mut display: mipidsi::Display<
+        //     _,
+        //     _,
+        //     esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>,
+        // > = Builder::ili9341(di).init(&mut delay, reset_pin).unwrap(); // delay provider from your MCU
+
         let mut display: mipidsi::Display<
-            _,
-            _,
-            esp_idf_hal::gpio::PinDriver<'static, esp_idf_hal::gpio::Output>,
-        > = Builder::ili9341_rgb565(di)
-            .init(&mut delay, reset_pin)
-            .unwrap(); // delay provider from your MCU
+            SpiInterface<'_, SpiDeviceDriver<'_, SpiDriver<'_>>, PinDriver<'_, Output>>,
+            ILI9341Rgb565,
+            mipidsi::NoResetPin,
+        > = Builder::new(ILI9341Rgb565, di)
+            .display_size(320, 240)
+            .invert_colors(ColorInversion::Inverted)
+            .init(&mut delay)
+            .unwrap();
 
         display.clear(Rgb565::BLACK).unwrap();
         display
-            .set_orientation(Orientation::Portrait(true))
+            .set_orientation(Orientation::new().rotate(Rotation::Deg90))
             .unwrap();
 
         // 创建一个文本样式

@@ -39,7 +39,7 @@ ili9341 = "0.5.0"
 # 嵌入式图形库，用于绘制文本和形状
 embedded-graphics = "0.8.1"
 # MIPI-DSI 接口（ILI9341 依赖它）
-mipidsi = "0.7.1"
+mipidsi = "0.10.0"
 # 用于提供延时
 embedded-hal = "0.2.7"
 

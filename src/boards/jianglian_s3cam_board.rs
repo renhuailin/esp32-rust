@@ -85,8 +85,9 @@ impl JiangLianS3CamBoard {
         let channel_led: LedcDriver<'_> =
             LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
 
-        let display = LcdSt7789::new(driver, dc.into(), cs.into(), channel_led)?;
+        let mut display = LcdSt7789::new(driver, dc.into(), cs.into(), channel_led)?;
         // display.init()?;
+        display.show_qrcode("fdsfsdfds");
 
         // 初始化 I2C 驱动和总线管理器
         let sda = pins.gpio1;

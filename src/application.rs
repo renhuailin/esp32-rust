@@ -693,6 +693,7 @@ impl Application {
                             //     error!("Failed to send hello message: {:?}", err);
                             // }
                         }
+
                         AppEvent::WebSocketClosed => {
                             info!("WebSocketClosed");
                             // board.SetPowerSaveMode(true);
@@ -701,6 +702,7 @@ impl Application {
                             //     display->SetChatMessage("system", "");
                             //     SetDeviceState(kDeviceStateIdle);
                             // }); });
+                            self.protocol.set_connected(false);
                             self.set_device_state(DeviceState::Idle);
                         }
                         AppEvent::WebsocketTextMessageReceived(text) => {
@@ -892,7 +894,8 @@ impl Application {
                             } else {
                                 // // 处理从服务器端接收到的音频数据包
                                 // info!(
-                                //     "XzEvent::AudioPacketReceived - 从服务器端接收到的音频数据包"
+                                //     "XzEvent::AudioPacketReceived - 从服务器端接收到的音频数据包 当前状态: {:?}",
+                                //     self.state
                                 // );
                                 if self.state == DeviceState::Speaking
                                     && audio_packet_send_queue_arc.lock().unwrap().len()
@@ -1511,7 +1514,7 @@ fn start_audio_output(
 
     // If app is busy decoding audio, return
     if share_audio_state.busy_decoding_audio.load(Ordering::SeqCst) {
-        info!("application: busy_decoding_audio: true");
+        // info!("application: busy_decoding_audio: true");
         return;
     }
 

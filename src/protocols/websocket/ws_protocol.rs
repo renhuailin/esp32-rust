@@ -3,24 +3,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result};
-use esp_idf_hal::io::EspIOError;
-use esp_idf_svc::ws::client::{
-    EspWebSocketClient, EspWebSocketClientConfig, WebSocketEvent, WebSocketEventType,
-};
+use esp_idf_svc::ws::client::{EspWebSocketClient, EspWebSocketClientConfig, WebSocketEventType};
 use esp_idf_svc::ws::FrameType;
 use esp_idf_sys::EspError;
 use log::{debug, error, info};
 
 use crate::audio::codec::types::AudioStreamPacket;
 use crate::common::enums::{AbortReason, ListeningMode};
-use crate::common::event::{AppEvent, WsEvent};
+use crate::common::event::AppEvent;
 use crate::protocols::protocol::Protocol;
 use crate::protocols::websocket::message::ClientHelloMessage;
 
 pub struct WebSocketProtocol {
     client: Option<Box<EspWebSocketClient<'static>>>,
-    internal_sender: Sender<AppEvent>,
-    internal_receiver: Option<Receiver<AppEvent>>,
+    // internal_sender: Option<Sender<AppEvent>>,
+    // internal_receiver: Option<Receiver<AppEvent>>,
     external_sender: Sender<AppEvent>,
     // 不再存储 config，而是存储构建 config 所需的数据
     device_id: String,
@@ -45,14 +42,13 @@ impl WebSocketProtocol {
     /// # 返回值
     /// 返回初始化后的 WebSocketProtocol 实例
     pub fn new(device_id: &str, sender: Sender<AppEvent>) -> Self {
-        let (inner_sender, inner_receiver): (Sender<AppEvent>, Receiver<AppEvent>) = channel();
         Self {
             client: None,
             // sender,
             device_id: device_id.to_string(),
             is_connected: false,
-            internal_sender: inner_sender,
-            internal_receiver: Some(inner_receiver),
+            // internal_sender: None,
+            // internal_receiver: None,
             external_sender: sender,
             on_incoming_text: None,
             on_incoming_audio: None,
@@ -187,7 +183,9 @@ impl Protocol for WebSocketProtocol {
         // let mut on_incoming_text_handler = self.on_incoming_text.take();
         // let mut on_incoming_audio_handler = self.on_incoming_audio.take();
 
-        let inner_sender = self.internal_sender.clone();
+        let (inner_sender, inner_receiver): (Sender<AppEvent>, Receiver<AppEvent>) = channel();
+
+        // let inner_sender = self.internal_sender.clone();
         let external_sender = self.external_sender.clone();
 
         *self.server_hello_received.lock().unwrap() = false;
@@ -281,56 +279,58 @@ impl Protocol for WebSocketProtocol {
 
         // // info!("wait for server hello message");
         // // wait for server hello message
-        let receiver = self.internal_receiver.take();
+        // let receiver = inner_receiver;
 
-        if let Some(rx) = receiver {
-            loop {
-                info!("WebSocketProtocol: Waiting for server hello message...");
-                match rx.recv() {
-                    Ok(event) => {
-                        match event {
-                            AppEvent::WebSocketConnected => {
-                                // debug!("Connected,try to send hello message");
+        // if let Some(rx) = receiver {
+        loop {
+            info!("WebSocketProtocol: Waiting for server hello message...");
+            match inner_receiver.recv() {
+                Ok(event) => {
+                    match event {
+                        AppEvent::WebSocketConnected => {
+                            info!("WebSocketConnected,try to send hello message");
+                            // send client hello message
+                            if let Some(client) = &mut self.client {
+                                // if client.is_connected() {
                                 // send client hello message
-                                if let Some(client) = &mut self.client {
-                                    if client.is_connected() {
-                                        // send client hello message
-                                        let hello_message = ClientHelloMessage::new().unwrap();
-                                        debug!("WebSocketProtocol: Sending hello message...");
-                                        match client
-                                            .send(FrameType::Text(false), hello_message.as_bytes())
-                                        {
-                                            Ok(_) => {
-                                                debug!("WebSocketProtocol: Hello message sent!")
-                                            }
-                                            Err(e) => {
-                                                error!("WebSocketProtocol: Send error: {:?}", e)
-                                            }
-                                        }
-                                    } else {
-                                        error!(
-                                            "WebSocketProtocol: Client not connected, cannot send."
-                                        );
+                                let hello_message = ClientHelloMessage::new().unwrap();
+                                debug!("WebSocketProtocol: Sending hello message...");
+                                match client.send(FrameType::Text(false), hello_message.as_bytes())
+                                {
+                                    Ok(_) => {
+                                        debug!("WebSocketProtocol: Hello message sent!")
+                                    }
+                                    Err(e) => {
+                                        error!("WebSocketProtocol: Send error: {:?}", e)
                                     }
                                 }
-                                // break;
+                                // } else {
+                                //     error!(
+                                //         "WebSocketProtocol: Client not connected, cannot send."
+                                //     );
+                                // }
                             }
-                            AppEvent::ServerHelloMessageReceived(_) => {
-                                // info!("WebSocketProtocol: Server hello message received. {}", text);
-                                // self.parse_server_hello_message(text);
-                                break;
-                            }
-                            _ => todo!(),
+                            // break;
                         }
+                        AppEvent::ServerHelloMessageReceived(_) => {
+                            // info!("WebSocketProtocol: Server hello message received. {}", text);
+                            // self.parse_server_hello_message(text);
+                            self.is_connected = true;
+                            break;
+                        }
+                        _ => todo!(),
                     }
-                    Err(e) => {
-                        error!("websocket error: {:?}", e);
-                    }
+                }
+                Err(e) => {
+                    error!("websocket error: {:?}", e);
                 }
             }
         }
+        // } else {
+        //     error!("websocket error: internal_receiver is None");
+        // }
 
-        info!("ws protocol is connected.");
+        info!("end of open_audio_channel.");
         self.is_connected = true;
 
         Ok(true)
@@ -448,10 +448,10 @@ impl Protocol for WebSocketProtocol {
         self.on_network_error = Some(Box::new(handler));
     }
 
-    // fn set_connected(&mut self, connected: bool) {
-    //     info!("WebSocket connection status changed: {}", connected);
-    //     self.is_connected = connected;
-    // }
+    fn set_connected(&mut self, connected: bool) {
+        info!("WebSocket connection status changed: {}", connected);
+        self.is_connected = connected;
+    }
 }
 
 impl Drop for WebSocketProtocol {

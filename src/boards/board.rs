@@ -20,9 +20,9 @@ pub trait Board {
 
     fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>>;
 
-    fn start_wifi_station(&mut self) -> Result<bool, Error>;
+    fn start_wifi_station(&mut self) -> Result<(bool, Vec<String>), Error>;
 
-    fn start_wifi_ap(&mut self) -> Result<bool, Error>;
+    fn start_wifi_ap(&mut self, available_ap_names: Vec<String>) -> Result<bool, Error>;
 
     fn start_network(&mut self) -> Result<()>;
 

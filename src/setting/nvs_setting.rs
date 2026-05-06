@@ -23,7 +23,7 @@ impl NvsSetting {
 
     pub fn get_string(&self, key: &str) -> Option<String> {
         // String values are limited in the IDF to 4000 bytes, but our buffer is shorter.
-        const MAX_STR_LEN: usize = 100;
+        const MAX_STR_LEN: usize = 4000;
         let mut buffer: [u8; MAX_STR_LEN] = [0; MAX_STR_LEN];
         match self.nvs.get_str(key, &mut buffer).unwrap() {
             Some(v) => {

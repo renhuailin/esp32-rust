@@ -5,7 +5,7 @@ use esp_idf_hal::io::{Read, Write};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     http::{server::EspHttpServer, Method},
-    wifi::{BlockingWifi, EspWifi},
+    wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
 use esp_idf_sys::esp_restart;
 use log::info;
@@ -34,8 +34,7 @@ struct FormData<'a> {
 
 pub fn start_http_server(
     http_server: &mut EspHttpServer<'static>,
-    wifi: Arc<Mutex<EspWifi<'static>>>,
-    sysloop: EspSystemEventLoop,
+    available_ssid_list: Vec<String>,
 ) -> anyhow::Result<()> {
     // let mut http_server = create_server()?;
 
@@ -46,23 +45,31 @@ pub fn start_http_server(
     })?;
 
     http_server.fn_handler::<anyhow::Error, _>("/scan_wifi_ssid", Method::Get, move |req| {
-        let mut esp_wifi = wifi.lock().unwrap();
-        let mut wifi = BlockingWifi::wrap(&mut *esp_wifi, sysloop.clone())?;
-        info!("get BlockingWifi ... ");
+        // let mut esp_wifi = wifi.lock().unwrap();
+        // let mut wifi = BlockingWifi::wrap(&mut *esp_wifi, sysloop.clone())?;
+        // // info!("get BlockingWifi ... ");
+        // wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
+
+        // wifi.start()?;
+        // // info!("wifi.start ... ");
+        // let ap_infos = wifi.scan()?;
+        // // info!("get ap_infos ... ");
+        // let ap_names = ap_infos
+        //     .into_iter()
+        //     .map(|a| a.ssid.to_string())
+        //     .collect::<Vec<String>>();
+
+        // // info!("Available AP names: {:?}", ap_names);
+
         let mut resp = req.into_ok_response()?;
+        // // write!(resp, "{}", serde_json::to_string(&ap_names).unwrap())?;
 
-        wifi.start()?;
-        info!("wifi.start ... ");
-        let ap_infos = wifi.scan()?;
-        info!("get ap_infos ... ");
-        let ap_names = ap_infos
-            .into_iter()
-            .map(|a| a.ssid.to_string())
-            .collect::<Vec<String>>();
-
-        info!("Available AP names: {:?}", ap_names);
-
-        write!(resp, "{}", serde_json::to_string(&ap_names).unwrap())?;
+        resp.write_all(
+            serde_json::to_string(&available_ssid_list)
+                .unwrap()
+                .as_bytes(),
+        )
+        .map(|_| ())?;
         Ok(())
     })?;
 

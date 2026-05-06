@@ -283,7 +283,7 @@ impl Board for JiangLianS3CamBoard {
         return Arc::clone(&self.audio_codec);
     }
 
-    fn start_wifi_station(&mut self) -> std::result::Result<bool, Error> {
+    fn start_wifi_station(&mut self) -> std::result::Result<(bool, Vec<String>), Error> {
         let ssid_manager = SsidMananger::get_instance();
 
         // scanning available access points
@@ -317,9 +317,8 @@ impl Board for JiangLianS3CamBoard {
             .collect();
 
         info!("Intersection: {:?}", intersection);
-
-        for ssid_item in ssid_list {
-            if intersection.contains(&&ssid_item.ssid) {
+        if intersection.is_empty() {
+            for ssid_item in ssid_list {
                 let connet_result = self
                     .wifi_driver
                     .connect(ssid_item.ssid.as_str(), ssid_item.password.as_str());
@@ -327,35 +326,53 @@ impl Board for JiangLianS3CamBoard {
                 if let Err(_) = connet_result {
                     continue;
                 } else {
-                    return Ok(true);
+                    return Ok((true, available_ap_names));
+                }
+            }
+        } else {
+            for ssid_item in ssid_list {
+                if intersection.contains(&&ssid_item.ssid) {
+                    let connet_result = self
+                        .wifi_driver
+                        .connect(ssid_item.ssid.as_str(), ssid_item.password.as_str());
+
+                    if let Err(_) = connet_result {
+                        continue;
+                    } else {
+                        return Ok((true, available_ap_names));
+                    }
                 }
             }
         }
 
-        Ok(false)
+        Ok((false, available_ap_names))
     }
 
-    fn start_wifi_ap(&mut self) -> std::result::Result<bool, Error> {
+    fn start_wifi_ap(&mut self, ap_names: Vec<String>) -> std::result::Result<bool, Error> {
         match self.wifi_driver.start_ap("xiaozhi_ap", "") {
-            std::result::Result::Ok(ip_info) => match self.wifi_driver.start_http_server() {
-                std::result::Result::Ok(_) => {
-                    info!(
-                        "成功启动http server,请访问 http://{}",
-                        ip_info.ip.to_string()
-                    );
+            std::result::Result::Ok(ip_info) => {
+                match self.wifi_driver.start_http_server(ap_names) {
+                    std::result::Result::Ok(_) => {
+                        info!(
+                            "成功启动http server,请访问 http://{}",
+                            ip_info.ip.to_string()
+                        );
 
-                    let url = format!("http://{}", ip_info.ip.to_string());
+                        let url = format!("http://{}", ip_info.ip.to_string());
 
-                    self.display.show_qrcode(&url);
-                    self.app_context.app_event_sender.send(
-                        crate::common::event::AppEvent::PlayAudioAlert("wificonfig".to_string()),
-                    )?;
+                        self.display.show_qrcode(&url);
+                        self.app_context.app_event_sender.send(
+                            crate::common::event::AppEvent::PlayAudioAlert(
+                                "wificonfig".to_string(),
+                            ),
+                        )?;
+                    }
+                    Err(e) => {
+                        error!("启动http server 出错：{:?}", e);
+                        return Err(e.into());
+                    }
                 }
-                Err(e) => {
-                    error!("启动http server 出错：{:?}", e);
-                    return Err(e.into());
-                }
-            },
+            }
             Err(err) => {
                 error!("启动http server 出错：{:?}", err);
             }
@@ -369,10 +386,10 @@ impl Board for JiangLianS3CamBoard {
 
         // self.wifi_scan()?;
 
-        let wifi_connected = self.start_wifi_station()?;
+        let (wifi_connected, ap_names) = self.start_wifi_station()?;
         if !wifi_connected {
             self.wifi_config_mode = true;
-            self.start_wifi_ap()?;
+            self.start_wifi_ap(ap_names)?;
         }
 
         Ok(())

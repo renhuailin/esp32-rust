@@ -165,6 +165,7 @@ impl Protocol for WebSocketProtocol {
             "Protocol-Version: 1\r\ndevice-id: {}\r\nClient-Id: {}\r\n",
             self.device_id, self.device_id
         );
+        info!("Web socket header: {}", header);
 
         let timeout = Duration::from_secs(10);
 
@@ -231,16 +232,28 @@ impl Protocol for WebSocketProtocol {
                             info!("Websocket received a text message, text: {text}");
 
                             if !*server_hello_received.lock().unwrap() {
-                                let message: serde_json::Value =
-                                    serde_json::from_str(text).unwrap();
-                                if let Some(message_type) = message["type"].as_str() {
-                                    if message_type == "hello" {
-                                        inner_sender
-                                            .send(AppEvent::ServerHelloMessageReceived(
-                                                text.to_string(),
-                                            ))
-                                            .unwrap();
-                                        *server_hello_received.lock().unwrap() = true;
+                                // let message: serde_json::Value =
+                                //     serde_json::from_str(text).unwrap();
+
+                                match serde_json::from_str::<serde_json::Value>(text) {
+                                    Ok(message) => {
+                                        if let Some(message_type) = message["type"].as_str() {
+                                            if message_type == "hello" {
+                                                inner_sender
+                                                    .send(AppEvent::ServerHelloMessageReceived(
+                                                        text.to_string(),
+                                                    ))
+                                                    .unwrap();
+                                                *server_hello_received.lock().unwrap() = true;
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if text == "认证失败" {
+                                            //TODO:: 处理认证失败！
+                                        } else {
+                                            error!("received a unknown message: {:?}", err);
+                                        }
                                     }
                                 }
                             } else {

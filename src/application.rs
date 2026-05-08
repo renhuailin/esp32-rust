@@ -282,6 +282,7 @@ impl Application {
         // check_new_version()?;
 
         let mac_address = board.get_wifi_driver().get_mac_address()?;
+        info!("MAC address: {}", mac_address);
         let sender_for_protocol = inner_sender.clone();
         let protocol = WebSocketProtocol::new(mac_address.as_str(), sender_for_protocol);
 

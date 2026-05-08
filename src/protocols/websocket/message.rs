@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::info;
 use serde_json::Value;
 
 pub struct ClientHelloMessage;
@@ -27,8 +28,8 @@ impl ClientHelloMessage {
         );
         let hello: Value = serde_json::from_str(&body)?;
         // hello["feature"] = json!({ "an": "object" });
-        println!("{:?}", hello);
-        println!("{:?}", serde_json::to_string(&hello));
+        info!("Hello message: {:?}", hello);
+        // println!("{:?}", serde_json::to_string(&hello));
         Ok(serde_json::to_string(&hello)?)
     }
 }

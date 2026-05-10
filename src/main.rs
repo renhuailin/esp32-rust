@@ -62,7 +62,6 @@ use xiaoxin_esp32::wifi::wifi_driver::{Esp32WifiDriver, WifiStation};
 use xiaoxin_esp32::{
     audio,
     axp173::{Axp173, Ldo},
-    lcd,
     led::WS2812RMT,
 };
 // use xiaoxin_esp32::{Application, ApplicationState};

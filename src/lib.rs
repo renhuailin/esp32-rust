@@ -5,7 +5,6 @@ pub mod boards;
 pub mod common;
 pub mod display;
 pub mod i2s;
-pub mod lcd;
 pub mod led;
 pub mod protocols;
 pub mod setting;

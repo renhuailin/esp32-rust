@@ -1,14 +1,14 @@
 use std::{
-    collections::{HashSet, VecDeque},
-    sync::{mpsc::Sender, Arc, Mutex, MutexGuard},
+    collections::HashSet,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
-    gpio::{AnyInputPin, Pin},
+    gpio::AnyInputPin,
     i2c::{I2cConfig, I2cDriver},
     i2s::{
-        config::{DataBitWidth, StdConfig, TdmConfig},
+        config::{DataBitWidth, StdConfig},
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
@@ -21,11 +21,10 @@ use log::{error, info};
 
 use crate::{
     audio::codec::{audio_codec::AudioCodec, xiaozhi_audio_codec::XiaozhiAudioCodec},
-    axp173::{Axp173, Ldo},
+    axp173::Axp173,
     boards::board::Board,
     common::{application_context::ApplicationContext, gpio_button::Button},
     display::{lcd::st7789::LcdSt7789, Display},
-    i2s::mixed_i2s::MixedI2sDriver,
     wifi::{
         ssid_manager::SsidMananger,
         wifi_driver::{Esp32WifiDriver, WifiAP, WifiStation},
@@ -38,11 +37,14 @@ pub struct JiangLianS3CamBoard {
     pub display: LcdSt7789,
     audio_codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     bus_manager: &'static BusManager<Mutex<I2cDriver<'static>>>,
-    touch_button: &'static mut Button,
+
+    speak_button: &'static mut Button,
     volume_button: &'static mut Button,
 
-    on_touch_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
+    on_speak_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
     on_volume_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
+    on_volume_long_pressed: Option<Box<dyn FnMut() + Send + 'static>>,
+
     wifi_config_mode: bool,
     app_context: ApplicationContext,
 }
@@ -162,12 +164,13 @@ impl JiangLianS3CamBoard {
             display: display,
             audio_codec: Arc::new(Mutex::new(audio_codec)),
             bus_manager,
-            touch_button,
+            speak_button: touch_button,
             volume_button,
-            on_touch_button_clicked: None,
+            on_speak_button_clicked: None,
             on_volume_button_clicked: None,
             wifi_config_mode: false,
             app_context,
+            on_volume_long_pressed: None,
         })
     }
 
@@ -223,12 +226,16 @@ impl JiangLianS3CamBoard {
 
     fn init_buttons(&mut self) -> Result<()> {
         println!("Init buttons");
-        if let Some(on_clicked) = self.on_touch_button_clicked.take() {
-            self.touch_button.on_click(on_clicked)?;
+        if let Some(on_clicked) = self.on_speak_button_clicked.take() {
+            self.speak_button.on_click(on_clicked)?;
         }
 
         if let Some(on_clicked) = self.on_volume_button_clicked.take() {
             self.volume_button.on_click(on_clicked)?;
+        }
+
+        if let Some(long_pressed_callback) = self.on_volume_long_pressed.take() {
+            self.volume_button.on_long_press(long_pressed_callback)?;
         }
 
         Ok(())
@@ -258,12 +265,16 @@ impl JiangLianS3CamBoard {
 impl Board for JiangLianS3CamBoard {
     type WifiDriver = Esp32WifiDriver;
 
-    fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
-        self.on_touch_button_clicked = Some(on_clicked);
+    fn on_speak_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
+        self.on_speak_button_clicked = Some(on_clicked);
     }
 
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
         self.on_volume_button_clicked = Some(on_clicked);
+    }
+
+    fn on_volume_button_long_pressed(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>) {
+        self.on_volume_long_pressed = Some(on_clicked);
     }
 
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {

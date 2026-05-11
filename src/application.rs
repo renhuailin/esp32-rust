@@ -261,18 +261,26 @@ impl Application {
         )?);
 
         let sender = inner_sender.clone();
-        board.on_touch_button_clicked(Box::new(move || {
-            // println!("Touch button clicked");
-            if let Err(e) = sender.send(AppEvent::BootButtonClicked) {
-                log::error!("Failed to send BootButtonClicked event: {:?}", e);
+        board.on_speak_button_clicked(Box::new(move || {
+            // info!("Touch button clicked");
+            if let Err(e) = sender.send(AppEvent::SpeakButtonClicked) {
+                log::error!("Failed to send SpeakButtonClicked event: {:?}", e);
             }
         }));
 
         let sender1 = inner_sender.clone();
         board.on_volume_button_clicked(Box::new(move || {
-            // println!("Volume button clicked");
+            // info!("Volume button clicked");
             if let Err(e) = sender1.send(AppEvent::VolumeButtonClicked) {
                 log::error!("Failed to send VolumeButtonClicked event: {:?}", e);
+            }
+        }));
+
+        let sender2 = inner_sender.clone();
+        board.on_volume_button_long_pressed(Box::new(move || {
+            info!("Volume button long pressed!");
+            if let Err(e) = sender2.send(AppEvent::VolumeButtonLongPressed) {
+                log::error!("Failed to send VolumeButtonLongPressed event: {:?}", e);
             }
         }));
 
@@ -630,7 +638,7 @@ impl Application {
             match self.inner_receiver.recv() {
                 Ok(event) => {
                     match event {
-                        AppEvent::BootButtonClicked => {
+                        AppEvent::SpeakButtonClicked => {
                             info!("Boot button clicked! current state: {:?}", self.state);
                             if self.state == DeviceState::Starting
                                 && !self.board.get_wifi_driver().is_connected().unwrap_or(false)
@@ -642,52 +650,47 @@ impl Application {
                         }
                         AppEvent::VolumeButtonClicked => {
                             info!("Volume button clicked! current state: {:?}", self.state);
-                            // if self.state == DeviceState::Idle {
-                            //     self.set_device_state(DeviceState::Listening);
-                            // } else if self.state == DeviceState::Listening {
-                            //     self.set_device_state(DeviceState::Idle);
-                            // }
-                            self.toggle_device_state();
+                            let mut volume = self
+                                .board
+                                .get_audio_codec()
+                                .lock()
+                                .unwrap()
+                                .get_output_volume()?;
 
-                            if audio_test_mode {
-                                //下面的代码是用于PCM音频本地回放测试用的
-                                // let mut pcm_data = {
-                                //     let mut buffer = audio_state.buffer.lock().unwrap();
-                                //     std::mem::take(&mut *buffer)
-                                // };
-                                // let pcm_u8: &[u8] = pcm_data.make_contiguous();
-
-                                info!("audio_test_mode: 准备本地播放PCM音频数据");
-                                let mut pcm_i16: VecDeque<i16> = {
-                                    let mut buffer = audio_state.pcm_buffer.lock().unwrap();
-                                    std::mem::take(&mut *buffer)
-                                };
-                                let pcm_u8 = i16_slice_to_bytes(pcm_i16.make_contiguous()).unwrap();
-
-                                codec_clone_for_pcm_player
-                                    .lock()
-                                    .unwrap()
-                                    .test_play_pcm(pcm_u8)
-                                    .unwrap();
-                                // continue;
-
-                                // thread::sleep(Duration::from_millis(1000 * 5));
-
-                                info!("audio_test_mode: 准备本地播放Opus音频数据");
-                                // 下面的代码是用于Opus音频本地回放测试用的
-                                let opus_data: VecDeque<AudioStreamPacket> = {
-                                    let mut buffer =
-                                        audio_state.audio_packet_buffer.lock().unwrap();
-                                    std::mem::take(&mut *buffer)
-                                };
-
-                                for packet in opus_data {
-                                    inner_sender
-                                        .send(AppEvent::AudioPacketReceived(packet))
-                                        .unwrap();
-                                }
+                            volume += 5;
+                            if volume > 100 {
+                                volume = 100;
                             }
+                            match self
+                                .board
+                                .get_audio_codec()
+                                .lock()
+                                .unwrap()
+                                .set_output_volume(volume)
+                            {
+                                Ok(_) => {
+                                    info!("set output volumen OK!");
+                                }
+                                Err(err) => {
+                                    error!("set_output_volume: {:?}", err);
+                                }
+                            };
+
+                            self.board
+                                .get_display()
+                                .set_status(format!("当前音量：{}", volume).as_str());
                         }
+
+                        AppEvent::VolumeButtonLongPressed => {
+                            self.board
+                                .get_audio_codec()
+                                .lock()
+                                .unwrap()
+                                .set_output_volume(0)?;
+
+                            self.board.get_display().set_status("当前音量:静音");
+                        }
+
                         AppEvent::WebSocketConnected => {
                             // self.protocol.set_connected(true);
                             // info!("Connected,try to send hello message");

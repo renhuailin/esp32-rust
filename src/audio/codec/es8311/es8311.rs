@@ -1,7 +1,10 @@
 // src/es8311.rs
-use crate::audio::codec::es8311::reg::*;
+use crate::audio::codec::es8311::volume_manager::load_volume_from_nvs;
+use crate::audio::codec::es8311::{reg::*, volume_manager};
+use crate::setting::nvs_setting::NvsSetting;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
+use log::{error, info};
 // 定义错误类型，这里我们直接用I2C的错误类型
 pub type Result<T, E> = core::result::Result<T, E>;
 
@@ -83,9 +86,12 @@ where
         // }
         self.write_reg(ES8311_GPIO_REG_44, 0x58)?;
 
-        // 5. 设置默认音量 (0-33, 0是最大声, 33是静音)
-        self.set_voice_volume(50)?; // 设置一个适中的音量
-
+        // 5. 设置默认音量
+        if let Ok(volume) = load_volume_from_nvs() {
+            self.set_voice_volume(volume)?;
+        } else {
+            self.set_voice_volume(volume_manager::DEFAULT_OUTPUT_VOLUME)?;
+        }
         Ok(())
     }
 
@@ -100,7 +106,7 @@ where
         // }
         // ret |= es8311_write_reg(codec, ES8311_RESET_REG00, regv);
 
-        self.set_master_mode(false);
+        self.set_master_mode(false)?;
 
         // regv = 0x3F;
         // if (codec->cfg.use_mclk) {
@@ -319,8 +325,8 @@ where
     /// 设置播放音量
     /// `volume`: 100 (最大) -  0(静音)
     pub fn set_voice_volume(&mut self, volume: u8) -> Result<(), E> {
-        let mut percent = volume.min(100); // 确保值在范围内
-        percent = volume.max(0);
+        info!("Setting voice volume to: {}", volume);
+        let percent: u8 = volume.min(100).max(0); // 确保值在范围内
 
         let vol = 255 as u16 * percent as u16 / 100 as u16; //255 = 0xFF - 0x00
         let value = vol as u8;
@@ -332,10 +338,11 @@ where
     /// 设置静音
     pub fn set_mute(&mut self, mute: bool) -> Result<(), E> {
         if mute {
-            self.set_voice_volume(0) // 设置为最大衰减即静音
+            //
+            self.set_voice_volume(0)
         } else {
             // 这里可以恢复到之前的音量，或者一个默认音量
-            self.set_voice_volume(20)
+            self.set_voice_volume(60)
         }
     }
 

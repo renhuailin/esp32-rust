@@ -2,13 +2,19 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     audio::codec::{
-        audio_codec::AudioCodec, es7210::es7210::Es7210, es8311::Es8311, make_channel_mask,
-        opus::decoder::OpusAudioDecoder, types::CodecSampleInfo,
+        audio_codec::AudioCodec,
+        es7210::es7210::Es7210,
+        es8311::{
+            volume_manager::{self, load_volume_from_nvs, save_volume_to_nvs},
+            Es8311,
+        },
+        make_channel_mask,
+        opus::decoder::OpusAudioDecoder,
+        types::CodecSampleInfo,
     },
-    i2s::mixed_i2s::MixedI2sDriver,
     setting::nvs_setting::NvsSetting,
 };
-use anyhow::{Error, Result};
+use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
     delay::{Delay, BLOCK},
     i2c::I2cDriver,
@@ -40,7 +46,7 @@ impl XiaozhiAudioCodec {
         let mut es8311 = Es8311::new(es8311_i2c_proxy);
         let mut delay = Delay::new_default();
         match es8311.open(&mut delay) {
-            Ok(_) => {
+            Result::Ok(_) => {
                 println!("初始化ES8311成功");
             }
             Err(e) => {
@@ -53,11 +59,11 @@ impl XiaozhiAudioCodec {
         info!("初始化ES7210...");
 
         match es7210.open() {
-            Ok(_) => {
+            Result::Ok(_) => {
                 println!("初始化es7210成功");
             }
             Err(e) => {
-                println!("初始化es7210失败:{:?}", e);
+                error!("初始化es7210失败:{:?}", e);
                 // return Err(anyhow!("初始化es7210失败:{:?}", e));
             }
         }
@@ -82,8 +88,19 @@ impl XiaozhiAudioCodec {
 
 impl AudioCodec for XiaozhiAudioCodec {
     fn set_output_volume(&mut self, volume: u8) -> Result<(), anyhow::Error> {
+        // info!("save 输出音量 to nvs: {}", volume);
+        save_volume_to_nvs(volume)?;
+        // info!("设置输出音量: {}", volume);
         self.output_codec.set_voice_volume(volume)?;
         Ok(())
+    }
+
+    fn get_output_volume(&self) -> Result<u8, anyhow::Error> {
+        if let Result::Ok(volume) = load_volume_from_nvs() {
+            Ok(volume)
+        } else {
+            Ok(volume_manager::DEFAULT_OUTPUT_VOLUME)
+        }
     }
 
     fn enable_input(&mut self, enable: bool) -> Result<(), anyhow::Error> {
@@ -134,7 +151,7 @@ impl AudioCodec for XiaozhiAudioCodec {
 
     fn start(&mut self) {
         match NvsSetting::new("audio") {
-            Ok(setting) => {
+            Result::Ok(setting) => {
                 if let Some(volume) = setting.get_u8("output_volume") {
                     if volume <= 0 {
                         self.output_volume = DEFAULT_OUTPUT_VOLUME;
@@ -172,7 +189,7 @@ impl AudioCodec for XiaozhiAudioCodec {
         for chunk in audio_data.chunks(CHUNK_SIZE) {
             // 4. 逐块写入I2S驱动
             match i2s_driver.lock().unwrap().write(chunk, BLOCK) {
-                Ok(bytes_written) => {
+                Result::Ok(bytes_written) => {
                     // 打印一些进度信息，方便调试
                     // info!("Successfully wrote {} bytes to I2S.", bytes_written);
                 }
@@ -199,7 +216,7 @@ impl AudioCodec for XiaozhiAudioCodec {
         for chunk in data.chunks(CHUNK_SIZE) {
             // 4. 逐块写入I2S驱动
             match self.i2s_driver.lock().unwrap().write(chunk, BLOCK) {
-                Ok(bytes_written) => {
+                Result::Ok(bytes_written) => {
                     // 打印一些进度信息，方便调试
                     // info!("Successfully wrote {} bytes to I2S.", bytes_written);
                 }
@@ -230,7 +247,7 @@ impl AudioCodec for XiaozhiAudioCodec {
         // let decode_result = decoder.decode(&opus_data);
 
         match decode_result {
-            Ok(pcm_data) => {
+            Result::Ok(pcm_data) => {
                 // info!("decode success.");
                 let is_stereo = channels == 2;
 

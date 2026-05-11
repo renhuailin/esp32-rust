@@ -18,8 +18,9 @@ pub trait Board {
 
     fn get_wifi_driver(&self) -> &Self::WifiDriver;
 
-    fn on_touch_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
+    fn on_speak_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
+    fn on_volume_button_long_pressed(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
 
     fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>>;
 

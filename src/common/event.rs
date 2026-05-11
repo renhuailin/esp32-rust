@@ -45,8 +45,9 @@ impl EspEventDeserializer for WsEvent {
 
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    BootButtonClicked,
+    SpeakButtonClicked,
     VolumeButtonClicked,
+    VolumeButtonLongPressed,
     OpenAudioChannel,
     CloseAudioChannel,
     WebSocketConnected,

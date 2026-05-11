@@ -35,7 +35,7 @@ use shared_bus::{BusManager, BusManagerStd};
 
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
-    display: Box<dyn Display>,
+    pub display: LcdSt7789,
     audio_codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     bus_manager: &'static BusManager<Mutex<I2cDriver<'static>>>,
     touch_button: &'static mut Button,
@@ -159,7 +159,7 @@ impl JiangLianS3CamBoard {
 
         Ok(Self {
             wifi_driver,
-            display: Box::new(display),
+            display: display,
             audio_codec: Arc::new(Mutex::new(audio_codec)),
             bus_manager,
             touch_button,
@@ -394,5 +394,11 @@ impl Board for JiangLianS3CamBoard {
         }
 
         Ok(())
+    }
+
+    type DisplayDriver = LcdSt7789;
+
+    fn get_display(&mut self) -> &mut Self::DisplayDriver {
+        return &mut self.display;
     }
 }

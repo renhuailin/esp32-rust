@@ -1,6 +1,7 @@
 use crate::{
     audio::codec::{types::AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE},
     common::converter::i16_slice_to_bytes,
+    display::{lcd::st7789::LcdSt7789, Display},
 };
 use anyhow::{Error, Result};
 use esp_idf_hal::{
@@ -216,7 +217,7 @@ fn read_firmware_info(
 pub struct Application {
     state: DeviceState,
     protocol: WebSocketProtocol,
-    board: Box<dyn Board<WifiDriver = Esp32WifiDriver>>,
+    board: Box<dyn Board<WifiDriver = Esp32WifiDriver, DisplayDriver = LcdSt7789>>,
 
     //用于处理内部事件的channel
     inner_sender: Sender<AppEvent>,
@@ -1009,6 +1010,7 @@ impl Application {
         if self.state == state {
             return;
         }
+
         let previous_state = self.state.clone();
         self.state = state;
 
@@ -1019,6 +1021,8 @@ impl Application {
                     previous_state, self.state
                 );
                 // display->SetStatus(Lang::Strings::STANDBY);
+                let display: &mut LcdSt7789 = self.board.get_display();
+                display.set_status("空闲状态");
                 // display->SetEmotion("neutral");
                 // audio_processor_->Stop();
                 // wake_word_->StartDetection();
@@ -1029,18 +1033,21 @@ impl Application {
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+                self.board.get_display().set_status("激活中");
             }
             DeviceState::WifiConfiguring => {
                 info!(
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+                self.board.get_display().set_status("配置网络");
             }
             DeviceState::Connecting => {
                 info!(
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state
                 );
+                self.board.get_display().set_status("连接中");
             }
             // DeviceState::DeviceStateAudioTesting => todo!(),
             DeviceState::Speaking => {
@@ -1059,6 +1066,7 @@ impl Application {
                     // #endif
                 }
                 self.reset_decoder();
+                self.board.get_display().set_status("正在说话");
             }
             DeviceState::Listening => {
                 info!(
@@ -1088,13 +1096,15 @@ impl Application {
                     // wake_word_->StopDetection();
                     self.opus_encoder.lock().unwrap().reset_state();
                     self.audio_processor.lock().unwrap().start();
+                    self.board.get_display().set_status("正在聆听");
                 }
             }
             DeviceState::Starting => {
                 info!(
                     "Starting state changed from {:?} to {:?}",
                     previous_state, self.state
-                )
+                );
+                self.board.get_display().set_status("启动中");
             }
             _ => {}
         }

@@ -4,8 +4,8 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_8X13, MonoTextStyle},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
+    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
+    text::{renderer::CharacterStyle, Text},
 };
 use esp_idf_hal::gpio::*;
 use esp_idf_hal::{
@@ -109,7 +109,7 @@ impl LcdSt7789 {
         println!("LcdSt7789 结构体初始化完成");
 
         // 清屏
-        display.clear(Rgb565::BLACK).unwrap();
+        // display.clear(Rgb565::BLACK).unwrap();
 
         // 1. 画一个刚好 240x320 的红框
         Rectangle::new(Point::new(0, 0), Size::new(320, 240))
@@ -233,19 +233,32 @@ impl LcdSt7789 {
 
 impl Display for LcdSt7789 {
     fn set_status(&mut self, status: &str) {
-        // 创建一个文本样式
-        let style = MonoTextStyle::new(&FONT_8X13, Rgb565::WHITE);
+        // 1. 定义清除区域（坐标和大小需要覆盖你的文本范围）
+        let clear_area = Rectangle::new(Point::new(0, 0), Size::new(110, 40));
 
-        // 创建文本对象
+        // 2. 用背景色填充这个矩形
+        clear_area
+            .into_styled(
+                PrimitiveStyleBuilder::new()
+                    .fill_color(Rgb565::BLACK)
+                    .build(),
+            )
+            .draw(&mut self.display)
+            .unwrap();
+
+        // 创建一个文本样式
+        let character_style =
+            U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy16_t_gb2312, Rgb565::WHITE);
+        // character_style.set_background_color(Some(Rgb565::BLACK));
         Text::new(
             status,
-            Point::new(30, 30), // 文本左上角在屏幕上的位置
-            style,
+            Point::new(5, 15), // 文本左上角在屏幕上的位置
+            character_style.clone(),
         )
         .draw(&mut self.display) // 绘制文本
         .unwrap();
 
-        println!("'Hello, Rust!' 已经显示在 LCD 上。");
+        // println!("'Hello, Rust!' 已经显示在 LCD 上。");
     }
 
     fn show_qrcode(&mut self, content: &str) {

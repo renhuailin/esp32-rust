@@ -59,7 +59,7 @@ impl Button {
         F: FnMut() + Send + 'static,
     {
         // 1. 清理旧的回调（如果有）
-        self.free_callback();
+        self.free_click_callback();
 
         // 2. 处理闭包的指针转换
         // 第一步：把闭包 Box 起来，变成 Trait Object (这是一个胖指针)
@@ -141,7 +141,7 @@ impl Button {
     }
 
     // 辅助函数：释放回调占用的内存
-    fn free_callback(&mut self) {
+    fn free_click_callback(&mut self) {
         if let Some(ptr) = self.click_callback_ptr.take() {
             unsafe {
                 // 先取消注册 (虽然 iot_button_delete 会处理，但显式处理是个好习惯)
@@ -194,7 +194,8 @@ unsafe extern "C" fn trampoline(_arg: *mut c_void, usr_data: *mut c_void) {
 impl Drop for Button {
     fn drop(&mut self) {
         // 1. 先释放回调的内存
-        self.free_callback();
+        self.free_click_callback();
+        self.free_long_press_callback();
 
         // 2. 再删除按钮句柄
         if !self.button_handle.is_null() {

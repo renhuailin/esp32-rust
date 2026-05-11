@@ -1,8 +1,8 @@
 use anyhow::Result;
 use esp_idf_sys::es32_component_button::{
-    button_config_t, button_event_t_BUTTON_SINGLE_CLICK, button_gpio_config_t, button_handle_t,
-    iot_button_delete, iot_button_new_gpio_device, iot_button_register_cb,
-    iot_button_unregister_cb,
+    button_config_t, button_event_t_BUTTON_LONG_PRESS_START, button_event_t_BUTTON_SINGLE_CLICK,
+    button_gpio_config_t, button_handle_t, iot_button_delete, iot_button_new_gpio_device,
+    iot_button_register_cb, iot_button_unregister_cb,
 };
 use std::ffi::c_void;
 use std::ptr;
@@ -16,7 +16,8 @@ pub struct Button {
     // 1. 保证闭包在 C 回调期间活着
     // 2. 在 Button Drop 时，我们需要手动释放这块内存，否则会内存泄漏
     // 这里保存的是指向 Box<BoxedCallback> 的裸指针
-    callback_ptr: Option<*mut BoxedCallback>,
+    click_callback_ptr: Option<*mut BoxedCallback>,
+    long_press_callback_ptr: Option<*mut BoxedCallback>,
 }
 
 impl Button {
@@ -47,7 +48,8 @@ impl Button {
 
         Ok(Self {
             button_handle,
-            callback_ptr: None,
+            click_callback_ptr: None,
+            long_press_callback_ptr: None,
         })
     }
 
@@ -90,19 +92,77 @@ impl Button {
         }
 
         // 4. 保存指针以便后续释放
-        self.callback_ptr = Some(usr_data);
+        self.click_callback_ptr = Some(usr_data);
 
+        Ok(())
+    }
+
+    /// 注册长按事件
+    pub fn on_long_press<F>(&mut self, callback: F) -> Result<()>
+    where
+        F: FnMut() + Send + 'static,
+    {
+        // 1. 清理旧的回调（如果有）
+        self.free_long_press_callback();
+
+        // 2. 处理闭包的指针转换
+        // 第一步：把闭包 Box 起来，变成 Trait Object (这是一个胖指针)
+        let cb_box: BoxedCallback = Box::new(callback);
+
+        // 第二步：因为 Trait Object 是胖指针(2个字长)，不能直接转成 void*(1个字长)。
+        // 所以我们需要再套一层 Box，得到指向 Trait Object 的指针 (这是一个瘦指针)
+        let cb_wrapper = Box::new(cb_box);
+
+        // 第三步：转为裸指针，准备传给 C
+        let usr_data = Box::into_raw(cb_wrapper);
+
+        // 3. 注册回调
+        let ret = unsafe {
+            iot_button_register_cb(
+                self.button_handle,
+                button_event_t_BUTTON_LONG_PRESS_START,
+                ptr::null_mut(),
+                Some(trampoline),        // 使用下面的蹦床函数
+                usr_data as *mut c_void, // 传入我们的闭包指针
+            )
+        };
+
+        if ret != 0 {
+            // 如果注册失败，别忘了把内存释放回来
+            unsafe {
+                let _ = Box::from_raw(usr_data);
+            }
+            return Err(anyhow::anyhow!("Failed to register callback: {}", ret));
+        }
+
+        // 4. 保存指针以便后续释放
+        self.long_press_callback_ptr = Some(usr_data);
         Ok(())
     }
 
     // 辅助函数：释放回调占用的内存
     fn free_callback(&mut self) {
-        if let Some(ptr) = self.callback_ptr.take() {
+        if let Some(ptr) = self.click_callback_ptr.take() {
             unsafe {
                 // 先取消注册 (虽然 iot_button_delete 会处理，但显式处理是个好习惯)
                 iot_button_unregister_cb(
                     self.button_handle,
                     button_event_t_BUTTON_SINGLE_CLICK,
+                    ptr::null_mut(),
+                );
+                // 将裸指针转回 Box，让它离开作用域自动 Drop
+                let _ = Box::from_raw(ptr);
+            }
+        }
+    }
+
+    fn free_long_press_callback(&mut self) {
+        if let Some(ptr) = self.long_press_callback_ptr.take() {
+            unsafe {
+                // 先取消注册 (虽然 iot_button_delete 会处理，但显式处理是个好习惯)
+                iot_button_unregister_cb(
+                    self.button_handle,
+                    button_event_t_BUTTON_LONG_PRESS_START,
                     ptr::null_mut(),
                 );
                 // 将裸指针转回 Box，让它离开作用域自动 Drop

@@ -1,11 +1,10 @@
 use crate::{common::qrcode::draw_qrcode, display::Display};
 use anyhow::{Ok, Result};
 use embedded_graphics::{
-    mono_font::{ascii::FONT_8X13, MonoTextStyle},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, PrimitiveStyleBuilder, Rectangle},
-    text::{renderer::CharacterStyle, Text},
+    primitives::{PrimitiveStyleBuilder, Rectangle},
+    text::Text,
 };
 use esp_idf_hal::gpio::*;
 use esp_idf_hal::{
@@ -15,6 +14,7 @@ use esp_idf_hal::{
     spi::{SpiConfig, SpiDeviceDriver, SpiDriver},
     units::*,
 };
+use log::info;
 use mipidsi::{
     interface::SpiInterface,
     models::ST7789,
@@ -24,7 +24,7 @@ use mipidsi::{
 use u8g2_fonts::U8g2TextStyle;
 // 1. 定义具体的硬件类型别名，方便阅读
 
-type ConcreteRstPin<'a> = PinDriver<'a, InputOutput>;
+// type ConcreteRstPin<'a> = PinDriver<'a, InputOutput>;
 
 // 3. 定义最终的 Display 类型
 // 注意：mipidsi::Display<接口, 型号, 复位引脚>
@@ -64,7 +64,7 @@ impl LcdSt7789 {
         let mut delay = Delay::new_default();
 
         // 定义 Reset 引脚 (虽然是 None，但类型要对齐)
-        let reset_pin: Option<ConcreteRstPin> = None;
+        // let reset_pin: Option<ConcreteRstPin> = None;
 
         // 3. 设置亮度 (通过设置占空比)
         let max_duty = ledc_driver.get_max_duty();
@@ -106,37 +106,35 @@ impl LcdSt7789 {
             .clear(Rgb565::BLACK)
             .map_err(|e| anyhow::anyhow!("Clear failed: {:?}", e))?;
 
-        println!("LcdSt7789 结构体初始化完成");
+        info!("LcdSt7789 初始化完成");
 
         // 清屏
         // display.clear(Rgb565::BLACK).unwrap();
 
-        // 1. 画一个刚好 240x320 的红框
-        Rectangle::new(Point::new(0, 0), Size::new(320, 240))
-            .into_styled(PrimitiveStyle::with_stroke(Rgb565::RED, 10))
-            .draw(&mut display)
-            .unwrap();
+        // // 1. 画一个刚好 240x320 的红框
+        // Rectangle::new(Point::new(0, 0), Size::new(320, 240))
+        //     .into_styled(PrimitiveStyle::with_stroke(Rgb565::RED, 10))
+        //     .draw(&mut display)
+        //     .unwrap();
 
-        let character_style =
-            U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312, Rgb565::WHITE);
+        // let character_style =
+        //     U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312, Rgb565::WHITE);
 
-        Text::new(
-            "你好, Rust!!!!!!",
-            Point::new(10, 10), // 文本左上角在屏幕上的位置
-            character_style.clone(),
-        )
-        .draw(&mut display) // 绘制文本
-        .unwrap();
+        // Text::new(
+        //     "你好, Rust!!!!!!",
+        //     Point::new(10, 10), // 文本左上角在屏幕上的位置
+        //     character_style.clone(),
+        // )
+        // .draw(&mut display) // 绘制文本
+        // .unwrap();
 
-        Text::new(
-            "你好, Rust!!!!!!",
-            Point::new(300, 230), // 文本左上角在屏幕上的位置
-            character_style,
-        )
-        .draw(&mut display) // 绘制文本
-        .unwrap();
-
-        println!("'Hello, Rust!' 已经显示在 LCD 上。");
+        // Text::new(
+        //     "你好, Rust!!!!!!",
+        //     Point::new(300, 230), // 文本左上角在屏幕上的位置
+        //     character_style,
+        // )
+        // .draw(&mut display) // 绘制文本
+        // .unwrap();
 
         // 返回结构体
         Ok(Self {

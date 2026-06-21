@@ -21,7 +21,7 @@ impl SsidMananger {
     pub fn get_instance() -> Self {
         Self {}
     }
-    pub fn get_ssid_list(&self) -> Result<Vec<SsidItem>> {
+    pub fn get_saved_ssid_list(&self) -> Result<Vec<SsidItem>> {
         let nvs = match NvsSetting::new("wifi") {
             std::result::Result::Ok(nvs) => nvs,
             Err(e) => {
@@ -59,7 +59,7 @@ impl SsidMananger {
     }
 
     pub fn add_ssid(&mut self, ssid: &str, password: &str) -> Result<()> {
-        let mut ssid_list = self.get_ssid_list()?;
+        let mut ssid_list = self.get_saved_ssid_list()?;
         if ssid_list.len() >= MAX_SSID_COUNT {
             // 把列表按最后连接时间升序排序, 删除最老的
             ssid_list.sort_by(|a, b| {
@@ -90,6 +90,36 @@ impl SsidMananger {
         let json_string = serde_json::to_string(ssid_list)?;
         nvs.set_string(WIFI_SETTING_KEY, &json_string)?;
 
+        Ok(())
+    }
+
+    pub fn update_ssid_item(&mut self, ssid_item: SsidItem) -> Result<()> {
+        info!("try to update ssid_item: {:?}", ssid_item);
+        let mut ssid_list = self.get_saved_ssid_list()?;
+        for i in 0..ssid_list.len() {
+            if ssid_list[i].ssid == ssid_item.ssid {
+                ssid_list[i] = ssid_item;
+                break;
+            }
+        }
+        info!("try to save ssid_list to nvs: {:?}", ssid_list);
+        self.save_to_nvs(&ssid_list)?;
+        Ok(())
+    }
+
+    pub fn update_ssid_last_connect_time(
+        &mut self,
+        ssid: &str,
+        last_connect_time: &str,
+    ) -> anyhow::Result<()> {
+        let saved_ssid_list = self.get_saved_ssid_list()?;
+        for mut ssid_item in saved_ssid_list {
+            if ssid_item.ssid == ssid {
+                ssid_item.last_connect_time = last_connect_time.to_string();
+                self.update_ssid_item(ssid_item)?;
+                return Ok(());
+            }
+        }
         Ok(())
     }
 }

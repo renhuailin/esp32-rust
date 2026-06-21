@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Error, Ok, Result};
+use chrono::Utc;
 use esp_idf_hal::{
     gpio::AnyInputPin,
     i2c::{I2cConfig, I2cDriver},
@@ -44,6 +45,7 @@ pub struct JiangLianS3CamBoard {
     on_speak_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
     on_volume_button_clicked: Option<Box<dyn FnMut() + Send + 'static>>,
     on_volume_long_pressed: Option<Box<dyn FnMut() + Send + 'static>>,
+    on_wifi_connected: Option<Box<dyn FnMut(String, String) + Send + 'static>>, // wifi 连接后回调
 
     wifi_config_mode: bool,
     app_context: ApplicationContext,
@@ -87,9 +89,9 @@ impl JiangLianS3CamBoard {
         let channel_led: LedcDriver<'_> =
             LedcDriver::new(peripherals.ledc.channel0, timer_driver, backlight_pin).unwrap();
 
-        let mut display = LcdSt7789::new(driver, dc.into(), cs.into(), channel_led)?;
+        let display = LcdSt7789::new(driver, dc.into(), cs.into(), channel_led)?;
         // display.init()?;
-        display.show_qrcode("fdsfsdfds");
+        // display.show_qrcode("fdsfsdfds");
 
         // 初始化 I2C 驱动和总线管理器
         let sda = pins.gpio1;
@@ -171,6 +173,7 @@ impl JiangLianS3CamBoard {
             wifi_config_mode: false,
             app_context,
             on_volume_long_pressed: None,
+            on_wifi_connected: None,
         })
     }
 
@@ -277,6 +280,13 @@ impl Board for JiangLianS3CamBoard {
         self.on_volume_long_pressed = Some(on_clicked);
     }
 
+    fn set_on_wifi_connected_callback(
+        &mut self,
+        on_connected: Box<dyn FnMut(String, String) + Send + 'static>,
+    ) {
+        self.on_wifi_connected = Some(on_connected);
+    }
+
     fn init_wifi(&mut self) -> std::result::Result<(), Error> {
         // // self.wifi_scan()?;
         // let wifi_connected = self.start_wifi_station()?;
@@ -296,7 +306,7 @@ impl Board for JiangLianS3CamBoard {
     }
 
     fn start_wifi_station(&mut self) -> std::result::Result<(bool, Vec<String>), Error> {
-        let ssid_manager = SsidMananger::get_instance();
+        let mut ssid_manager = SsidMananger::get_instance();
 
         // scanning available access points
         let available_ap_names = match self.wifi_driver.get_available_access_points() {
@@ -310,10 +320,10 @@ impl Board for JiangLianS3CamBoard {
         info!("Available AP names: {:?}", available_ap_names);
 
         // get saved ssid list
-        let ssid_list = ssid_manager.get_ssid_list()?;
-        info!("Saved SSID list: {:?}", ssid_list);
+        let saved_ssid_list = ssid_manager.get_saved_ssid_list()?;
+        info!("Saved SSID list: {:?}", saved_ssid_list);
 
-        let saved_ap_names = ssid_list
+        let saved_ap_names = saved_ssid_list
             .iter()
             .map(|ssid| ssid.ssid.clone())
             .collect::<Vec<_>>();
@@ -330,7 +340,7 @@ impl Board for JiangLianS3CamBoard {
 
         info!("Intersection: {:?}", intersection);
         if intersection.is_empty() {
-            for ssid_item in ssid_list {
+            for mut ssid_item in saved_ssid_list {
                 let connet_result = self
                     .wifi_driver
                     .connect(ssid_item.ssid.as_str(), ssid_item.password.as_str());
@@ -338,11 +348,15 @@ impl Board for JiangLianS3CamBoard {
                 if let Err(_) = connet_result {
                     continue;
                 } else {
+                    info!("Connected to saved ssid: {}", ssid_item.ssid);
+                    //更新这个ssid的最后连接时间
+                    ssid_item.last_connect_time = Utc::now().to_rfc3339();
+                    ssid_manager.update_ssid_item(ssid_item)?;
                     return Ok((true, available_ap_names));
                 }
             }
         } else {
-            for ssid_item in ssid_list {
+            for mut ssid_item in saved_ssid_list {
                 if intersection.contains(&&ssid_item.ssid) {
                     let connet_result = self
                         .wifi_driver
@@ -351,6 +365,22 @@ impl Board for JiangLianS3CamBoard {
                     if let Err(_) = connet_result {
                         continue;
                     } else {
+                        info!("Connected to saved ssid: {}", ssid_item.ssid);
+                        //更新这个ssid的最后连接时间
+                        let last_connect_time = Utc::now().to_rfc3339();
+                        info!("current time: {}", last_connect_time);
+                        ssid_item.last_connect_time = last_connect_time;
+                        let ssid = ssid_item.ssid.clone();
+
+                        ssid_manager.update_ssid_item(ssid_item)?;
+
+                        let mac_address = self.wifi_driver.get_mac_address()?;
+                        info!("mac_address: {}", mac_address);
+
+                        if let Some(mut on_wifi_connectd) = self.on_wifi_connected.take() {
+                            on_wifi_connectd(ssid, mac_address.to_string());
+                        }
+
                         return Ok((true, available_ap_names));
                     }
                 }

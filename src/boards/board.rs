@@ -22,6 +22,11 @@ pub trait Board {
     fn on_volume_button_clicked(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
     fn on_volume_button_long_pressed(&mut self, on_clicked: Box<dyn FnMut() + Send + 'static>);
 
+    fn set_on_wifi_connected_callback(
+        &mut self,
+        on_connected: Box<dyn FnMut(String, String) + Send + 'static>,
+    );
+
     fn get_audio_codec(&mut self) -> Arc<Mutex<dyn AudioCodec>>;
 
     fn start_wifi_station(&mut self) -> Result<(bool, Vec<String>), Error>;

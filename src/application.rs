@@ -2,8 +2,10 @@ use crate::{
     audio::codec::{types::AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE},
     common::converter::i16_slice_to_bytes,
     display::{lcd::st7789::LcdSt7789, Display},
+    wifi::ssid_manager::{self, SsidMananger},
 };
 use anyhow::{Error, Result};
+use chrono::Utc;
 use esp_idf_hal::{
     delay::BLOCK,
     i2s::{I2sBiDir, I2sDriver},
@@ -11,7 +13,7 @@ use esp_idf_hal::{
 };
 use std::{
     collections::VecDeque,
-    ffi::{c_void, CStr},
+    ffi::{c_void, CStr, CString},
     ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,7 +28,7 @@ use esp_idf_sys::{
     esp_partition_find, esp_partition_get, esp_partition_next,
     esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
     esp_partition_type_t_ESP_PARTITION_TYPE_APP, i2s_port_t_I2S_NUM_0, i2s_start, i2s_stop,
-    i2s_zero_dma_buffer,
+    i2s_zero_dma_buffer, setenv, settimeofday, timeval, tzset,
 };
 use log::{error, info, warn};
 
@@ -93,11 +95,11 @@ impl SharedAudioState {
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-fn check_new_version() -> anyhow::Result<()> {
+fn check_new_version(mac_address: &str) -> anyhow::Result<()> {
     info!("check_new_version, current version is {}", VERSION);
 
     let mut client = HttpClient::wrap(EspHttpConnection::new(&Default::default())?);
-    check_for_updates(&mut client)?;
+    check_for_updates(&mut client, mac_address)?;
     Ok(())
 }
 
@@ -106,27 +108,52 @@ mod http_status {
     pub const NOT_MODIFIED: u16 = 304;
 }
 
-pub fn check_for_updates(client: &mut HttpClient<EspHttpConnection>) -> anyhow::Result<()> {
+pub fn check_for_updates(
+    client: &mut HttpClient<EspHttpConnection>,
+    mac_address: &str,
+) -> anyhow::Result<()> {
     let mut ota = EspOta::new()?;
 
     let current_version = VERSION;
     info!("Current version: {current_version}");
 
     info!("Checking for updates...");
-
+    let request_body = br#"{"app_version":"1.0.0"}"#;
+    let content_len = request_body.len().to_string();
     let headers = [
-        ("Accept", "application/octet-stream"),
-        ("X-Esp32-Version", &current_version),
+        // ("Accept", "application/octet-stream"),
+        // ("X-Esp32-Version", &current_version),
+        ("content-type", "application/json"),
+        ("Content-Length", &content_len),
+        ("device-id", mac_address),
     ];
 
-    let ota_firmware_url = "http://192.168.1.145:3000/api/v1/ota/update";
+    // let ota_firmware_url = "http://192.168.1.145:3000/api/v1/ota/update";
+    let ota_check_url = "http://192.168.1.174:3003/api/ota/check";
 
-    let request = client.request(Method::Get, ota_firmware_url, &headers)?;
-    let response = request.submit()?;
+    let mut request = client.request(Method::Post, ota_check_url, &headers)?;
+    // 2. 写入 body
+    request.write(request_body)?;
+
+    let mut response = request.submit()?;
+
+    let mut body = [0_u8; 3048];
 
     if response.status() == http_status::NOT_MODIFIED {
         info!("OTA: Already up to date");
     } else if response.status() == http_status::OK {
+        // TODO:: 这里需要解析response的body，获取到ota_firmware_url
+        let read = response.read(&mut body)?;
+
+        let body_str = String::from_utf8_lossy(&body[..read]).into_owned();
+        info!("OTA: body: {body_str}");
+        info!("Body (truncated to 3K):\n{:?}", &body_str);
+        let json = serde_json::from_str::<serde_json::Value>(&body_str)?;
+        let ts = json["server_time"]["timestamp"].as_i64().unwrap_or(0);
+        let offset = json["server_time"]["timezone_offset"].as_i64().unwrap_or(0) as i32;
+        update_local_time(ts, offset)?;
+        return Ok(());
+
         info!("OTA: An update is available, updating...");
         // let mut update = ota.initiate_update()?;
 
@@ -214,6 +241,49 @@ fn read_firmware_info(
     }
 }
 
+fn update_local_time(timestamp_ms: i64, timezone_offset_min: i32) -> anyhow::Result<()> {
+    // 1. 毫秒 -> 秒 + 微秒
+    let sec = timestamp_ms / 1000;
+    let usec = (timestamp_ms % 1000) * 1000;
+
+    let tv = timeval {
+        tv_sec: sec as _,
+        tv_usec: usec as _,
+    };
+
+    // 2. 设置系统时间 (第二个参数已废弃, 传 null)
+    let ret = unsafe { settimeofday(&tv, std::ptr::null()) };
+    if ret != 0 {
+        return Err(anyhow::anyhow!("settimeofday failed"));
+    }
+
+    // 3. 设置时区
+    // POSIX TZ 格式: 东八区 = CST-8 (符号与日常习惯相反, 负号表示东)
+    let hours = timezone_offset_min / 60;
+    let mins = timezone_offset_min.abs() % 60;
+    let tz_str = if mins == 0 {
+        format!("CST-{}", hours)
+    } else {
+        format!("CST-{}:{:02}", hours, mins)
+    };
+
+    let c_tz = CString::new(tz_str)
+        .map_err(|_| "invalid tz string")
+        .map_err(|e| anyhow::anyhow!("invalid tz string: {}", e))?;
+
+    unsafe {
+        setenv("TZ".as_ptr(), c_tz.as_ptr(), 1); // 1 = overwrite
+        tzset();
+    }
+
+    log::info!(
+        "System time updated: {} ms, TZ offset {} min",
+        timestamp_ms,
+        timezone_offset_min
+    );
+    Ok(())
+}
+
 pub struct Application {
     state: DeviceState,
     protocol: WebSocketProtocol,
@@ -284,11 +354,26 @@ impl Application {
             }
         }));
 
+        board.set_on_wifi_connected_callback(Box::new(move |ssid: String, mac_address: String| {
+            info!("Volume button long pressed!");
+            // info!("check new version ...");
+            if let Err(e) = check_new_version(&mac_address) {
+                log::error!("Failed to check new version {:?}", e);
+            }
+
+            //print current systime.
+            let now = Utc::now().to_rfc3339();
+            info!("current systime: {}", now);
+
+            // update ssid last connect time.
+            let mut ssid_manager = SsidMananger::get_instance();
+            if let Err(e) = ssid_manager.update_ssid_last_connect_time(&ssid, &now) {
+                log::error!("Failed to update ssid last connect time {:?}", e);
+            }
+        }));
+
         board.init()?;
         info!("board init success");
-
-        // info!("check new version ...");
-        // check_new_version()?;
 
         let mac_address = board.get_wifi_driver().get_mac_address()?;
         info!("MAC address: {}", mac_address);
@@ -657,7 +742,7 @@ impl Application {
                                 .unwrap()
                                 .get_output_volume()?;
 
-                            volume += 5;
+                            volume += 2;
                             if volume > 100 {
                                 volume = 100;
                             }

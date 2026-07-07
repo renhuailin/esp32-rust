@@ -793,6 +793,7 @@ impl Application {
                             //     SetDeviceState(kDeviceStateIdle);
                             // }); });
                             self.protocol.set_connected(false);
+                            self.play_silence(); //如果设备在speaking，服务器突然关闭，这时设备会一直嗒嗒嗒地响，在这里加一段静音，可以解决这个问题。
                             self.set_device_state(DeviceState::Idle);
                         }
                         AppEvent::WebsocketTextMessageReceived(text) => {
@@ -1061,6 +1062,7 @@ impl Application {
                         }
 
                         AppEvent::ProtocolNetworkError(err) => {
+                            self.play_silence(); //如果设备在speaking，服务器突然关闭，这时设备会一直嗒嗒嗒地响，在这里加一段静音，可以解决这个问题。
                             self.set_device_state(DeviceState::Idle);
                             error!("ProtocolNetworkError: {:?}", err);
                         }

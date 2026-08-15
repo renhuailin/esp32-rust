@@ -1071,16 +1071,51 @@ impl Application {
                                                         text, self.state
                                                     );
 
-                                                    self.shared_audio_state
-                                                        .audio_decode_queue
-                                                        .lock()
-                                                        .unwrap()
-                                                        .clear();
+                                                    // 对齐 C++ 原版 background_task_->WaitForCompletion()：
+                                                    // tts stop 与最后几个 opus 包走同一 websocket，到达本分支时
+                                                    // audio_decode_queue 里通常还积压着未解码的尾段包。
+                                                    // 之前的做法是直接 clear() —— 尾段整个被扔掉，
+                                                    // 表现为"话没说完就进 Listening"。正确做法：等 audio_loop
+                                                    // 线程把队列消费完（队列为空且不在解码中），限时保护防卡死。
+                                                    {
+                                                        let deadline =
+                                                            std::time::Instant::now()
+                                                                + Duration::from_millis(3000);
+                                                        loop {
+                                                            let queue_empty = self
+                                                                .shared_audio_state
+                                                                .audio_decode_queue
+                                                                .lock()
+                                                                .unwrap()
+                                                                .is_empty();
+                                                            let idle = !self
+                                                                .shared_audio_state
+                                                                .busy_decoding_audio
+                                                                .load(Ordering::SeqCst);
+                                                            if queue_empty && idle {
+                                                                break;
+                                                            }
+                                                            if std::time::Instant::now()
+                                                                >= deadline
+                                                            {
+                                                                warn!(
+                                                                    "TTS drain timeout, dropping tail packets"
+                                                                );
+                                                                self.shared_audio_state
+                                                                    .audio_decode_queue
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .clear();
+                                                                break;
+                                                            }
+                                                            std::thread::sleep(
+                                                                Duration::from_millis(20),
+                                                            );
+                                                        }
+                                                    }
 
                                                     self.play_silence();
 
-                                                    // TODO:: 看一下 background_task_ 在我们这里怎么实现，他的作用应该是等后台任务完成。
-                                                    // background_task_->WaitForCompletion();
                                                     if self.state == DeviceState::Speaking {
                                                         if self.listening_mode
                                                             == ListeningMode::Manual

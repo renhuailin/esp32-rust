@@ -275,6 +275,11 @@ impl WakeWordService {
         feed_chunksize * self.input_channels
     }
 
+    /// 当前 AFE 配置的输入声道数（喂料路径据此换算交错帧数）
+    pub fn input_channels(&self) -> usize {
+        self.input_channels
+    }
+
     /// 获取支持的唤醒词列表
     pub fn wake_words(&self) -> &[String] {
         &self.wake_words
@@ -348,7 +353,7 @@ impl WakeWordService {
                     // max_abs 正常但无唤醒 => wakenet 模型状态异常。
                     static FETCH_COUNT: AtomicU32 = AtomicU32::new(0);
                     let fetches = FETCH_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if fetches % 200 == 0 {
+                    if fetches % 50 == 0 {
                         let probe_len =
                             (*res).data_size as usize / std::mem::size_of::<i16>();
                         let probe_slice = std::slice::from_raw_parts(

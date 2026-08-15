@@ -433,8 +433,24 @@ impl Application {
 
         // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长
         let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(10);
+        // ── 唤醒诊断开关 ─────────────────────────────────────────────────────
+        // 背景：ES7210 std（非TDM）模式下 I2S 两个槽位 = MIC1 + MIC2。
+        // 若 ch1 实为第二个麦克风而非播放回采参考，AFE 以 "MR" 格式把 MIC2
+        // 当 AEC 参考去消 MIC1 的"回声"——两路相邻 mic 的人声高度相关，
+        // AEC 会逐渐收敛到把人声也消掉 → 唤醒几乎必败，且越用越难唤醒。
+        // 此开关临时关闭 AEC（AFE 单声道 "M"）：codec 照常读双声道但只喂
+        // MIC1，配合 audio_loop 里 wake feed alive 分声道探针，
+        // 一次烧录即可确诊 + 验证。若唤醒恢复可靠 => 假设成立。
+        const WAKE_DISABLE_AEC_DIAG: bool = true;
+
+        let (wake_channels, wake_reference) = if WAKE_DISABLE_AEC_DIAG {
+            info!("[wake-diag] AEC disabled: AFE uses single mic channel (M)");
+            (1usize, false)
+        } else {
+            (input_channels as usize, input_reference)
+        };
         let wake_word_service: Arc<Mutex<Option<WakeWordService>>> =
-            match WakeWordService::new(input_channels as usize, input_reference) {
+            match WakeWordService::new(wake_channels, wake_reference) {
                 Ok(service) => Arc::new(Mutex::new(Some(service))),
                 Err(_) => Arc::new(Mutex::new(None)),
             };
@@ -1910,7 +1926,23 @@ fn start_audio_input(
     };
 
     if wake_running && wake_feed_size > 0 {
-        let need_bytes = wake_feed_size * 2;
+        // 唤醒喂料：codec 输出 codec_channels 声道交错数据；
+        // AFE 需要的声道数可能不同（诊断模式下 AFE 只要 1 声道 MIC1）。
+        let codec_channels = {
+            let codec = codec.lock().unwrap();
+            codec.input_channels().max(1) as usize
+        };
+        let afe_channels = {
+            let guard = wake_word_service.lock().unwrap();
+            match guard.as_ref() {
+                Some(service) => service.input_channels().max(1),
+                None => codec_channels,
+            }
+        };
+        // wake_feed_size = AFE 每次所需样本数（含其全部声道）
+        // 对应交错帧数 = wake_feed_size / afe_channels
+        let frames_per_feed = wake_feed_size / afe_channels;
+        let need_bytes = frames_per_feed * codec_channels * 2;
         if wake_read_buffer.len() < need_bytes {
             wake_read_buffer.resize(need_bytes, 0);
         }
@@ -1926,30 +1958,61 @@ fn start_audio_input(
         if bytes_read > 0 {
             match bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
                 Ok(samples) => {
-                    // 心跳+内容探针：确认喂料管线在跑，并观察喂入数据的幅度。
-                    // max_abs≈0 且几乎全零 => 麦克风数据全零（ES7210/I2S 问题）
+                    // 分声道心跳探针：ch0 = MIC1（AFE 实际消费的麦克风），
+                    // ch1 = 名义参考声道（MR 模式时被 AEC 当回采参考）。
+                    // 判读：平时说话 ch1 大幅跟随 ch0 => ch1 是第二个麦克风，
+                    // AEC 在抵消人声（本次诊断的假设）；仅设备出声时 ch1 大
+                    // => ch1 是真实回采参考；ch1 恒为 0 => 参考悬空。
                     static WAKE_FEED_COUNT: AtomicU32 = AtomicU32::new(0);
                     let feeds = WAKE_FEED_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if feeds % 200 == 0 {
-                        let max_abs = samples
-                            .iter()
-                            .map(|s| s.unsigned_abs())
-                            .max()
-                            .unwrap_or(0);
+                    if feeds % 50 == 0 {
+                        let usable = samples.len() / codec_channels * codec_channels;
+                        let (mut max0, mut max1) = (0u16, 0u16);
+                        for frame in samples[..usable].chunks(codec_channels) {
+                            let a0 = frame[0].unsigned_abs();
+                            if a0 > max0 {
+                                max0 = a0;
+                            }
+                            if codec_channels > 1 {
+                                let a1 = frame[1].unsigned_abs();
+                                if a1 > max1 {
+                                    max1 = a1;
+                                }
+                            }
+                        }
                         let zeros = samples.iter().filter(|&&s| s == 0).count();
                         info!(
-                            "wake feed alive: total {} feeds, need_bytes={}, bytes_read={}, max_abs={}, zeros={}/{}",
+                            "wake feed alive: total {} feeds, ch0(MIC1) max_abs={}, ch1(ref?) max_abs={}, zeros={}/{}",
                             feeds + 1,
-                            need_bytes,
-                            bytes_read,
-                            max_abs,
+                            max0,
+                            max1,
                             zeros,
                             samples.len()
                         );
                     }
-                    let mut guard = wake_word_service.lock().unwrap();
-                    if let Some(service) = guard.as_mut() {
-                        let _ = service.feed(&samples);
+                    // 按需去交错：诊断模式（afe_channels=1 < codec_channels）只取 ch0
+                    let mono_buffer: Vec<i16>;
+                    let feed_slice: &[i16] = if afe_channels < codec_channels {
+                        let usable = samples.len() / codec_channels * codec_channels;
+                        mono_buffer = samples[..usable]
+                            .chunks(codec_channels)
+                            .map(|frame| frame[0])
+                            .collect();
+                        &mono_buffer
+                    } else {
+                        samples
+                    };
+                    if feed_slice.len() >= wake_feed_size {
+                        let mut guard = wake_word_service.lock().unwrap();
+                        if let Some(service) = guard.as_mut() {
+                            let _ = service.feed(&feed_slice[..wake_feed_size]);
+                        }
+                    } else {
+                        warn!(
+                            "wake feed underflow: got {} samples, need {}",
+                            feed_slice.len(),
+                            wake_feed_size
+                        );
                     }
                 }
                 Err(_) => {

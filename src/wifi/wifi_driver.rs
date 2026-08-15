@@ -12,7 +12,7 @@ use esp_idf_svc::{
         EspWifi, WifiDeviceId,
     },
 };
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::common::httpd_server::{create_server, start_http_server};
 
@@ -147,7 +147,48 @@ impl WifiStation for Esp32WifiDriver {
 
         info!("Connecting wifi...");
 
-        wifi.connect()?;
+        // 连接重试策略（依据两轮实测日志）：
+        // 1) auth 偶发超时（`auth -> init (0x200)`，AP 不回 auth 帧）后 IDF 不会自动重试，
+        //    单次失败就会让设备掉进 AP 配网模式；重新 flash（=重启，耗时 30s+）后立刻能连上，
+        //    证明是 AP 侧瞬时故障（疑似路由器防暴力锁定 ~30-40s 窗口）。
+        // 2) connect() 超时返回后 STA 状态机不会自动复位，直接再 connect() 会
+        //    静默挂满整个超时（实测尝试 2 全程无任何 wifi 状态日志），白白烧掉一次机会。
+        //    因此每次失败后必须先 disconnect() 复位状态机，让下一次是真正发起新 auth 的尝试。
+        // 退避 2s/3s/5s/8s：5 次真实 auth 约分布在启动后 ~8s/28s/47s/70s/95s，
+        // 足以覆盖 90s 级别的 AP 锁定窗口。
+        const MAX_CONNECT_ATTEMPTS: usize = 5;
+        const RETRY_DELAYS_MS: [u64; MAX_CONNECT_ATTEMPTS - 1] = [2000, 3000, 5000, 8000];
+        let mut connected = false;
+        for attempt in 1..=MAX_CONNECT_ATTEMPTS {
+            info!("STA connect attempt {}/{}", attempt, MAX_CONNECT_ATTEMPTS);
+            match wifi.connect() {
+                std::result::Result::Ok(()) => {
+                    connected = true;
+                    break;
+                }
+                Err(e) => {
+                    error!(
+                        "STA connect attempt {}/{} failed: {:?}",
+                        attempt, MAX_CONNECT_ATTEMPTS, e
+                    );
+                    if attempt < MAX_CONNECT_ATTEMPTS {
+                        // 关键：强制复位 STA 状态机，否则下一次 connect 会静默挂起
+                        if let Err(de) = wifi.disconnect() {
+                            warn!("STA disconnect before retry failed: {:?}", de);
+                        }
+                        let delay_ms = RETRY_DELAYS_MS[attempt - 1];
+                        info!("Retrying in {} ms...", delay_ms);
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    }
+                }
+            }
+        }
+        if !connected {
+            bail!(
+                "WiFi connect failed after {} attempts",
+                MAX_CONNECT_ATTEMPTS
+            );
+        }
 
         info!("Waiting for DHCP lease...");
 

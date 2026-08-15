@@ -180,7 +180,8 @@ impl WakeWordService {
 
     /// 注册唤醒词检测回调
     pub fn on_wake_word_detected(&mut self, callback: WakeWordCallback) {
-        info!("on_wake_word_detected:: 检测到唤醒词!");
+        // 注意：这里是注册回调，不是检测到唤醒词！真实唤醒有单独的日志。
+        info!("on_wake_word_detected:: 注册唤醒词回调");
         let mut state = self.state.lock().unwrap();
         state.wake_word_callback = Some(callback);
     }

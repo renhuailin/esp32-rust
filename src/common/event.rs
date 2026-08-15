@@ -58,9 +58,11 @@ pub enum AppEvent {
     AudioPacketReceived(AudioStreamPacket),
     WebsocketTextMessageReceived(String),
     ProtocolNetworkError(String),
+    WakeWordDetected(String),
     AudioDecodeEvent,
     AudioTestEvent(Vec<i16>),
     TTSStop,
     TTSStart,
     PlayAudioAlert(String), //播放内置的提示音频
+    RefreshWifiSignal,      // 定时刷新 WiFi 信号强度
 }

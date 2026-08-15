@@ -231,10 +231,7 @@ impl LcdSt7789 {
 
 impl Display for LcdSt7789 {
     fn set_status(&mut self, status: &str) {
-        // 1. 定义清除区域（坐标和大小需要覆盖你的文本范围）
-        let clear_area = Rectangle::new(Point::new(0, 0), Size::new(110, 40));
-
-        // 2. 用背景色填充这个矩形
+        let clear_area = Rectangle::new(Point::new(60, 0), Size::new(200, 40));
         clear_area
             .into_styled(
                 PrimitiveStyleBuilder::new()
@@ -244,21 +241,20 @@ impl Display for LcdSt7789 {
             .draw(&mut self.display)
             .unwrap();
 
-        // 创建一个文本样式
         let character_style =
             U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy16_t_gb2312, Rgb565::WHITE);
-        // character_style.set_background_color(Some(Rgb565::BLACK));
-        Text::new(
-            status,
-            Point::new(5, 15), // 文本左上角在屏幕上的位置
-            character_style.clone(),
-        )
-        .draw(&mut self.display) // 绘制文本
-        .unwrap();
 
-        // println!("'Hello, Rust!' 已经显示在 LCD 上。");
+        let mut text_width = 0;
+        for ch in status.chars() {
+            text_width += if ch.is_ascii() { 8 } else { 16 };
+        }
+        let x = 60 + (200 - text_width) / 2;
+        let x = x.max(60).min(240) as i32;
+
+        Text::new(status, Point::new(x, 24), character_style)
+            .draw(&mut self.display)
+            .unwrap();
     }
-
     fn show_qrcode(&mut self, content: &str) {
         let _code = draw_qrcode(
             &mut self.display,
@@ -268,5 +264,112 @@ impl Display for LcdSt7789 {
             Rgb565::BLACK,
             Rgb565::WHITE,
         );
+    }
+
+    fn show_wifi_signal(&mut self, rssi: Option<i8>) {
+        let clear_area = Rectangle::new(Point::new(0, 0), Size::new(60, 40));
+        clear_area
+            .into_styled(
+                PrimitiveStyleBuilder::new()
+                    .fill_color(Rgb565::BLACK)
+                    .build(),
+            )
+            .draw(&mut self.display)
+            .unwrap();
+
+        let bars = match rssi {
+            None => 0,
+            Some(r) if r >= -30 => 4,
+            Some(r) if r >= -50 => 3,
+            Some(r) if r >= -70 => 2,
+            Some(r) if r >= -85 => 1,
+            Some(_) => 0,
+        };
+
+        let bar_w: i32 = 6;
+        let gap: i32 = 2;
+        let base_x: i32 = 5;
+        let base_y: i32 = 24; // 底部对齐在 y=24
+        let max_h: i32 = 16; // 总高 16px（之前是 20，缩为与电池同高）
+
+        for i in 0..4 {
+            let h = (i + 1) * max_h / 4;
+            let x = base_x + i * (bar_w + gap);
+            let y = base_y - h;
+
+            let color = if i < bars {
+                match bars {
+                    1 | 2 => Rgb565::RED,
+                    3 => Rgb565::YELLOW,
+                    _ => Rgb565::GREEN,
+                }
+            } else {
+                Rgb565::new(0x20, 0x20, 0x20)
+            };
+
+            Rectangle::new(Point::new(x, y), Size::new(bar_w as u32, h as u32))
+                .into_styled(PrimitiveStyleBuilder::new().fill_color(color).build())
+                .draw(&mut self.display)
+                .unwrap();
+        }
+    }
+
+    fn show_battery_level(&mut self, level: u8) {
+        let clear_area = Rectangle::new(Point::new(260, 0), Size::new(60, 40));
+        clear_area
+            .into_styled(
+                PrimitiveStyleBuilder::new()
+                    .fill_color(Rgb565::BLACK)
+                    .build(),
+            )
+            .draw(&mut self.display)
+            .unwrap();
+
+        let level = level.min(100);
+
+        let bat_x = 275;
+        let bat_y = 11; // 从 8 改为 11，使电池底部落在 y=25
+        let bat_w = 30;
+        let bat_h = 14;
+
+        Rectangle::new(Point::new(bat_x, bat_y), Size::new(bat_w, bat_h))
+            .into_styled(
+                PrimitiveStyleBuilder::new()
+                    .stroke_color(Rgb565::WHITE)
+                    .stroke_width(1)
+                    .fill_color(Rgb565::BLACK)
+                    .build(),
+            )
+            .draw(&mut self.display)
+            .unwrap();
+
+        Rectangle::new(Point::new(bat_x + bat_w as i32, bat_y + 4), Size::new(3, 6))
+            .into_styled(
+                PrimitiveStyleBuilder::new()
+                    .fill_color(Rgb565::WHITE)
+                    .build(),
+            )
+            .draw(&mut self.display)
+            .unwrap();
+
+        if level > 0 {
+            let max_fill = (bat_w - 4) as u32;
+            let fill_w = (max_fill * level as u32 / 100).max(1);
+            let fill_color = if level > 60 {
+                Rgb565::GREEN
+            } else if level > 20 {
+                Rgb565::YELLOW
+            } else {
+                Rgb565::RED
+            };
+
+            Rectangle::new(
+                Point::new(bat_x + 2, bat_y + 2),
+                Size::new(fill_w, (bat_h - 4) as u32),
+            )
+            .into_styled(PrimitiveStyleBuilder::new().fill_color(fill_color).build())
+            .draw(&mut self.display)
+            .unwrap();
+        }
     }
 }

@@ -1,5 +1,8 @@
 use crate::{
-    audio::codec::{types::AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE},
+    audio::{
+        codec::{types::AudioStreamPacket, AUDIO_INPUT_SAMPLE_RATE},
+        processor::wake_word_service::WakeWordService,
+    },
     common::converter::i16_slice_to_bytes,
     display::{lcd::st7789::LcdSt7789, Display},
     wifi::ssid_manager::{self, SsidMananger},
@@ -25,8 +28,8 @@ use std::{
 };
 
 use esp_idf_sys::{
-    esp_partition_find, esp_partition_get, esp_partition_next,
-    esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
+    es32_component_esp_sr::wake_word_info_t, esp_partition_find, esp_partition_get,
+    esp_partition_next, esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
     esp_partition_type_t_ESP_PARTITION_TYPE_APP, i2s_port_t_I2S_NUM_0, i2s_start, i2s_stop,
     i2s_zero_dma_buffer, setenv, settimeofday, timeval, tzset,
 };
@@ -306,6 +309,8 @@ pub struct Application {
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     audio_packet_queue: Arc<Mutex<VecDeque<AudioStreamPacket>>>, //待发送的音频队列
 
+    wake_word_service: Arc<Mutex<Option<WakeWordService>>>,
+
     decode_task_sender: Sender<AppEvent>,
     decode_task_receiver: Option<Receiver<AppEvent>>,
     audio_test_mode: bool, //音频测试模式,在这个模式下，并不真的发送音频数据到服务器端，
@@ -385,12 +390,12 @@ impl Application {
             VecDeque::<AudioStreamPacket>::with_capacity(MAX_AUDIO_PACKETS_IN_QUEUE),
         ));
 
-        // let (input_channels, input_reference) = {
-        //     let codec = board.get_audio_codec().clone();
-        //     let input_channels = codec.lock().unwrap().input_channels();
-        //     let input_reference = codec.lock().unwrap().input_reference();
-        //     (input_channels, input_reference)
-        // };
+        let (input_channels, input_reference) = {
+            let codec = board.get_audio_codec().clone();
+            let input_channels = codec.lock().unwrap().input_channels();
+            let input_reference = codec.lock().unwrap().input_reference();
+            (input_channels, input_reference)
+        };
 
         // let audio_processor = Arc::new(Mutex::new(
         //     AfeAudioProcessor::new(input_channels as usize, input_reference).unwrap(),
@@ -428,6 +433,11 @@ impl Application {
 
         // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长
         let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(10);
+        let wake_word_service: Arc<Mutex<Option<WakeWordService>>> =
+            match WakeWordService::new(input_channels as usize, input_reference) {
+                Ok(service) => Arc::new(Mutex::new(Some(service))),
+                Err(_) => Arc::new(Mutex::new(None)),
+            };
 
         let instance = Self {
             state: DeviceState::Idle,
@@ -449,6 +459,7 @@ impl Application {
             inner_pcm_tx: pcm_tx,
             inner_pcm_rx: Some(pcm_rx),
             audio_format: "opus".to_string(),
+            wake_word_service: wake_word_service,
         };
         Ok(instance)
     }
@@ -626,9 +637,16 @@ impl Application {
             }));
         let pcm_tx = self.inner_pcm_tx.clone();
         let audio_state = Arc::clone(&self.shared_audio_state);
+        let wake_word_service_for_loop = self.wake_word_service.clone();
 
         let task_closure: Box<dyn FnOnce() + Send> = Box::new(move || {
-            audio_loop(codec_clone, audio_processor, audio_state, pcm_tx);
+            audio_loop(
+                codec_clone,
+                audio_processor,
+                audio_state,
+                pcm_tx,
+                wake_word_service_for_loop,
+            );
         });
 
         let closure_box = Box::new(task_closure);
@@ -658,6 +676,26 @@ impl Application {
         // self.start_output_audio();
 
         self.set_device_state(DeviceState::Idle);
+
+        info!("启动唤醒词服务...");
+        let wake_word_service_clone = self.wake_word_service.clone();
+
+        // 注册唤醒回调：检测到唤醒词时发送内部事件，由主事件循环统一处理
+        let inner_sender_for_wake = self.inner_sender.clone();
+        {
+            let mut guard = wake_word_service_clone.lock().unwrap();
+            if let Some(service) = guard.as_mut() {
+                service.on_wake_word_detected(Box::new(move |wake_word| {
+                    info!("Wake word detected: {}", wake_word);
+                    if let Err(e) =
+                        inner_sender_for_wake.send(AppEvent::WakeWordDetected(wake_word))
+                    {
+                        error!("Failed to send WakeWordDetected event: {:?}", e);
+                    }
+                }));
+                service.start_detection();
+            }
+        }
 
         let codec_for_opus_player = Arc::clone(&codec_arc);
 
@@ -697,6 +735,22 @@ impl Application {
 
         self.audio_alert("success");
 
+        // 初始化显示假电池电量（75%），后续接入真实电池数据后替换
+        self.board.get_display().show_battery_level(75);
+
+        // 启动 WiFi 信号强度定时刷新
+        let wifi_signal_sender = self.inner_sender.clone();
+        let _ = thread::Builder::new()
+            .name("wifi_signal".into())
+            .stack_size(4 * 1024)
+            .spawn(move || loop {
+                thread::sleep(Duration::from_secs(5));
+                if let Err(e) = wifi_signal_sender.send(AppEvent::RefreshWifiSignal) {
+                    log::error!("Failed to send RefreshWifiSignal: {:?}", e);
+                    break;
+                }
+            });
+
         // 处理内部事件
         self.event_loop()?;
         Ok(())
@@ -723,6 +777,13 @@ impl Application {
             match self.inner_receiver.recv() {
                 Ok(event) => {
                     match event {
+                        AppEvent::WakeWordDetected(wake_word) => {
+                            info!("唤醒词触发: {}", wake_word);
+                            if self.state == DeviceState::Idle {
+                                // 与点击说话按钮相同的路径：Idle -> Listening
+                                self.toggle_device_state();
+                            }
+                        }
                         AppEvent::SpeakButtonClicked => {
                             info!("Boot button clicked! current state: {:?}", self.state);
                             if self.state == DeviceState::Starting
@@ -1071,6 +1132,12 @@ impl Application {
                             self.audio_alert(&message);
                         }
 
+                        AppEvent::RefreshWifiSignal => {
+                            if let Ok(rssi) = self.board.get_wifi_driver().get_rssi() {
+                                self.board.get_display().show_wifi_signal(rssi);
+                            }
+                        }
+
                         _ => {
                             info!("Received unhandled event: {:?}", event);
                         }
@@ -1117,6 +1184,10 @@ impl Application {
                 // audio_processor_->Stop();
                 // wake_word_->StartDetection();
                 self.audio_processor.lock().unwrap().stop();
+                // 回到空闲状态，恢复唤醒词检测
+                if let Some(service) = self.wake_word_service.lock().unwrap().as_mut() {
+                    service.start_detection();
+                }
             }
             DeviceState::Activating => {
                 info!(
@@ -1184,6 +1255,9 @@ impl Application {
                     // opus_encoder_->ResetState();
                     // audio_processor_->Start(); //启动音频处理器。
                     // wake_word_->StopDetection();
+                    if let Some(service) = self.wake_word_service.lock().unwrap().as_mut() {
+                        service.stop_detection();
+                    }
                     self.opus_encoder.lock().unwrap().reset_state();
                     self.audio_processor.lock().unwrap().start();
                     self.board.get_display().set_status("正在聆听");
@@ -1547,6 +1621,7 @@ fn audio_loop(
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     share_audio_state: Arc<SharedAudioState>,
     inner_pcm_tx: SyncSender<Vec<u8>>,
+    wake_word_service: Arc<Mutex<Option<WakeWordService>>>,
 ) {
     // let mut codec = audio_codec.lock().unwrap();
     // codec.set_output_volume(50);
@@ -1558,6 +1633,13 @@ fn audio_loop(
     // info!("application: feed_size: {}", feed_size);
     // const READ_CHUNK_SIZE: usize = 1024;
     let mut read_buffer = vec![0u8; feed_size];
+
+    // 唤醒词检测的 feed 缓冲（get_feed_size 返回 i16 样本数，乘 2 转为字节数）
+    let wake_feed_size = {
+        let guard = wake_word_service.lock().unwrap();
+        guard.as_ref().map(|s| s.get_feed_size()).unwrap_or(0)
+    };
+    let mut wake_read_buffer = vec![0u8; wake_feed_size.saturating_mul(2)];
 
     let mut shared_decode_buffer: Vec<i16> = Vec::with_capacity(4096);
     // let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
@@ -1579,7 +1661,9 @@ fn audio_loop(
         start_audio_input(
             Arc::clone(&audio_codec),
             audio_processor_arc.clone(),
+            &wake_word_service,
             &mut read_buffer,
+            &mut wake_read_buffer,
         );
 
         let codec_arc = Arc::clone(&audio_codec);
@@ -1681,9 +1765,13 @@ fn start_audio_output(
 fn start_audio_input(
     codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
+    wake_word_service: &Arc<Mutex<Option<WakeWordService>>>,
     mut read_buffer: &mut Vec<u8>,
+    mut wake_read_buffer: &mut Vec<u8>,
 ) {
-    thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
+    // 对齐 C++ OnAudioInput：喂料路径上不做任何 sleep，全速读取，
+    // 仅当 wake 与 processor 都未运行时（函数末尾）才 delay 半帧。
+    // 前导 sleep 会导致消费速率低于生产速率，DMA 积压溢出、音频断续。
     // if (audio_processor_->IsRunning())
     // {
     //     std::vector<int16_t> data;
@@ -1697,8 +1785,6 @@ fn start_audio_input(
     //         }
     //     }
     // }
-
-    // vTaskDelay(pdMS_TO_TICKS(OPUS_FRAME_DURATION_MS / 2));
 
     // if audio_processor.lock().unwrap().is_running() {
     //     let samples = audio_processor.lock().unwrap().get_feed_size();
@@ -1729,6 +1815,40 @@ fn start_audio_input(
     //     "application: is_running: {}, feed_size: {}",
     //     is_running, feed_size
     // );
+
+    // 2. 唤醒词检测优先：检测运行时把 codec 数据喂给 WakeWordService
+    let (wake_running, wake_feed_size) = {
+        let guard = wake_word_service.lock().unwrap();
+        match guard.as_ref() {
+            Some(service) => (service.is_detection_running(), service.get_feed_size()),
+            None => (false, 0),
+        }
+    };
+
+    if wake_running && wake_feed_size > 0 {
+        let need_bytes = wake_feed_size * 2;
+        if wake_read_buffer.len() < need_bytes {
+            wake_read_buffer.resize(need_bytes, 0);
+        }
+
+        let bytes_read = match codec.lock().unwrap().read_audio_data(&mut wake_read_buffer) {
+            Ok(bytes_read) => bytes_read,
+            Err(e) => {
+                error!("application: read_audio_data error: {:?}", e);
+                0
+            }
+        };
+
+        if bytes_read > 0 {
+            if let Ok(samples) = bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
+                let mut guard = wake_word_service.lock().unwrap();
+                if let Some(service) = guard.as_mut() {
+                    let _ = service.feed(&samples);
+                }
+            }
+        }
+        return;
+    }
 
     if is_running && feed_size > 0 {
         // let start = Instant::now();
@@ -1816,9 +1936,13 @@ fn start_audio_input(
         } else {
             info!("bytes_read is 0, 不进行feed");
         }
+
+        return;
     }
 
-    // thread::sleep(Duration::from_millis(10));
+    // 对齐 C++ OnAudioInput 末尾的 vTaskDelay(OPUS_FRAME_DURATION_MS / 2)：
+    // 仅在 wake 检测与音频处理器都未运行（空闲）时才休眠半帧
+    thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
 }
 
 fn decode_opus_audio1(

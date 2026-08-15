@@ -169,7 +169,7 @@ impl Protocol for WebSocketProtocol {
 
         let timeout = Duration::from_secs(10);
 
-        let ws_url = "ws://192.168.1.174:8000/xiaozhi/v1/";
+        let ws_url = "ws://192.168.3.5:8000/xiaozhi/v1/";
         // let ws_url = "ws://xiaogu.long9.net:8000/xiaozhi/v1/"; //阿里云上的服务
 
         let config = EspWebSocketClientConfig {
@@ -407,6 +407,7 @@ impl Protocol for WebSocketProtocol {
                 format!(r#"{{"session_id":"{}","type":"abort"}}"#, self.device_id)
             }
         };
+
         self.send_text(&message)?;
         Ok(())
     }

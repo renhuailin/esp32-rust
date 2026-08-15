@@ -44,6 +44,9 @@ pub trait WifiStation {
         &mut self,
         on_new_access_point_add: Box<dyn FnMut(&str, &str) -> Result<(), Error> + Send + 'static>,
     );
+
+    /// 获取当前连接AP的信号强度 (RSSI)，未连接返回 None
+    fn get_rssi(&self) -> Result<Option<i8>>;
 }
 
 pub trait WifiAP {
@@ -205,6 +208,17 @@ impl WifiStation for Esp32WifiDriver {
         on_new_access_point_add: Box<dyn FnMut(&str, &str) -> Result<(), Error> + Send + 'static>,
     ) {
         self.on_new_access_point_add = Some(on_new_access_point_add);
+    }
+
+    fn get_rssi(&self) -> Result<Option<i8>> {
+        let wifi = self.wifi.lock().unwrap();
+        if !wifi.is_connected()? {
+            return Ok(None);
+        }
+        match wifi.get_ap_info() {
+            Result::Ok(ap_info) => Ok(Some(ap_info.signal_strength)),
+            Err(_) => Ok(None),
+        }
     }
 }
 

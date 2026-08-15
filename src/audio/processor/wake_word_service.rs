@@ -11,6 +11,7 @@ use esp_idf_sys::es32_component_esp_sr::{
 use esp_idf_sys::ESP_FAIL;
 use log::{error, info};
 
+use crate::audio::codec::opus::encoder::OpusAudioEncoder;
 use crate::utils::ffi::c_task_trampoline;
 
 /// 唤醒词检测回调
@@ -178,7 +179,7 @@ impl WakeWordService {
 
     /// 注册唤醒词检测回调
     pub fn on_wake_word_detected(&mut self, callback: WakeWordCallback) {
-        info!("检测到唤醒词!");
+        info!("on_wake_word_detected:: 检测到唤醒词!");
         let mut state = self.state.lock().unwrap();
         state.wake_word_callback = Some(callback);
     }
@@ -358,6 +359,55 @@ impl WakeWordService {
                 1,
             );
         }
+    }
+
+    /// 对应 C++ AfeWakeWord::EncodeWakeWordData：
+    /// 把缓存的唤醒词 PCM（约 2 秒，AFE 处理后的单声道 16k 数据）编码为 opus 包
+    pub fn encode_wake_word_data(&mut self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.wake_word_opus.clear();
+            if state.wake_word_pcm.is_empty() {
+                return;
+            }
+        }
+
+        let start_time = std::time::Instant::now();
+        // 16kHz 单声道 60ms 帧，与 C++ OpusEncoderWrapper(16000, 1, OPUS_FRAME_DURATION_MS) 一致
+        let mut encoder = match OpusAudioEncoder::new(16000, 1, 60) {
+            Ok(encoder) => encoder,
+            Err(e) => {
+                error!("Failed to create opus encoder for wake word: {:?}", e);
+                return;
+            }
+        };
+        encoder.set_complexity(0); // 0 is the fastest
+
+        let mut state = self.state.lock().unwrap();
+        let pcm_blocks: Vec<Vec<i16>> = state.wake_word_pcm.drain(..).collect();
+        let opus_queue = &mut state.wake_word_opus;
+        let mut packets: usize = 0;
+        let mut callback = |opus: Vec<u8>| {
+            opus_queue.push_back(opus);
+            packets += 1;
+        };
+        for pcm in pcm_blocks {
+            // encoder 内部按 60ms 帧组包，不足一帧的块会自动拼接，末尾残留丢弃
+            if let Err(e) = encoder.encode(pcm, &mut callback) {
+                error!("Failed to encode wake word pcm: {:?}", e);
+            }
+        }
+        info!(
+            "Encode wake word opus {} packets in {} ms",
+            packets,
+            start_time.elapsed().as_millis()
+        );
+    }
+
+    /// 对应 C++ AfeWakeWord::GetWakeWordOpus：
+    /// 取出一个编码后的 opus 包，None 表示已全部取出
+    pub fn get_wake_word_opus(&mut self) -> Option<Vec<u8>> {
+        self.state.lock().unwrap().wake_word_opus.pop_front()
     }
 }
 

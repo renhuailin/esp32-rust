@@ -779,9 +779,81 @@ impl Application {
                     match event {
                         AppEvent::WakeWordDetected(wake_word) => {
                             info!("唤醒词触发: {}", wake_word);
-                            if self.state == DeviceState::Idle {
-                                // 与点击说话按钮相同的路径：Idle -> Listening
-                                self.toggle_device_state();
+                            // 对齐 C++ Application::OnWakeWordDetected（CONFIG_USE_AFE_WAKE_WORD 路径）
+                            match self.state {
+                                DeviceState::Idle => {
+                                    // 1. 编码缓存的唤醒词音频（约 2 秒 PCM -> opus）
+                                    {
+                                        let mut guard = self.wake_word_service.lock().unwrap();
+                                        if let Some(service) = guard.as_mut() {
+                                            service.encode_wake_word_data();
+                                        }
+                                    }
+                                    // 2. 音频通道未打开时先连接服务器
+                                    if !self.protocol.is_audio_channel_opened() {
+                                        self.set_device_state(DeviceState::Connecting);
+                                        match self.protocol.open_audio_channel() {
+                                            Ok(true) => {}
+                                            _ => {
+                                                error!("Failed to open audio channel");
+                                                // 连接失败，恢复唤醒检测等待下次唤醒
+                                                if let Some(service) = self
+                                                    .wake_word_service
+                                                    .lock()
+                                                    .unwrap()
+                                                    .as_mut()
+                                                {
+                                                    service.start_detection();
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    // 3. 上行唤醒词音频（服务器可用作上下文）
+                                    loop {
+                                        let opus_data = {
+                                            let mut guard = self.wake_word_service.lock().unwrap();
+                                            match guard.as_mut() {
+                                                Some(service) => service.get_wake_word_opus(),
+                                                None => None,
+                                            }
+                                        };
+                                        let payload = match opus_data {
+                                            Some(data) if !data.is_empty() => data,
+                                            _ => break,
+                                        };
+                                        let packet = AudioStreamPacket {
+                                            sample_rate: AUDIO_INPUT_SAMPLE_RATE as i32,
+                                            frame_duration: OPUS_FRAME_DURATION_MS as i32,
+                                            timestamp: 0,
+                                            payload,
+                                        };
+                                        if let Err(e) = self.protocol.send_audio(&packet) {
+                                            error!("Failed to send wake word audio: {:?}", e);
+                                            break;
+                                        }
+                                    }
+                                    // 4. 发送 listen/detect 消息，服务器将回应 TTS（如"我在呢"）
+                                    if let Err(e) =
+                                        self.protocol.send_wake_word_detected(&wake_word)
+                                    {
+                                        error!("Failed to send wake word detected: {:?}", e);
+                                    }
+                                    // 5. 进入聆听（C++: SetListeningMode(aec ? Realtime : AutoStop)）
+                                    self.set_listening_mode(if self.aec_mode == AecMode::Off {
+                                        ListeningMode::AutoStop
+                                    } else {
+                                        ListeningMode::Realtime
+                                    });
+                                }
+                                DeviceState::Speaking => {
+                                    // 说话过程中唤醒词打断（C++: AbortSpeaking(kAbortReasonWakeWordDetected)）
+                                    self.abort_speaking(AbortReason::WakeWordDetected);
+                                }
+                                DeviceState::Activating => {
+                                    self.set_device_state(DeviceState::Idle);
+                                }
+                                _ => {}
                             }
                         }
                         AppEvent::SpeakButtonClicked => {
@@ -1219,12 +1291,11 @@ impl Application {
 
                 if self.listening_mode != ListeningMode::Realtime {
                     self.audio_processor.lock().unwrap().stop();
-
-                    //                     #if CONFIG_USE_AFE_WAKE_WORD
-                    //             wake_word_->StartDetection();
-                    // #else
-                    //             wake_word_->StopDetection();
-                    // #endif
+                    // 对应 C++ #if CONFIG_USE_AFE_WAKE_WORD：
+                    // 说话时继续唤醒检测，支持说话过程中唤醒词打断
+                    if let Some(service) = self.wake_word_service.lock().unwrap().as_mut() {
+                        service.start_detection();
+                    }
                 }
                 self.reset_decoder();
                 self.board.get_display().set_status("正在说话");

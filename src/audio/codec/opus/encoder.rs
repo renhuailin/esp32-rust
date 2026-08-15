@@ -11,6 +11,7 @@ pub struct OpusAudioEncoder {
     encoder: *mut OpusEncoder,
     // sample_rate: i32,
     // duration_ms: i32,
+    channels: i32,
     frame_size: usize,
     in_buffer: Vec<i16>,
 }
@@ -62,6 +63,7 @@ impl OpusAudioEncoder {
             encoder,
             // sample_rate,
             // duration_ms,
+            channels,
             frame_size: frame_size.try_into()?,
             in_buffer: Vec::new(),
         })
@@ -119,8 +121,9 @@ impl OpusAudioEncoder {
                     self.encoder,
                     // self.in_buffer.as_ptr(), // 输入 PCM 数据的裸指针
                     data.as_ptr(), // 输入 PCM 数据的裸指针
-                    // self.frame_size as i32,
-                    (data.len() / 2) as i32,
+                    // opus_encode 的 frame_size 参数是"每声道样本数"（声道交错排列），
+                    // 必须按编码器实际声道数换算，单声道时除以 1、立体声时除以 2
+                    (data.len() / self.channels as usize) as i32,
                     // 960,
                     opus_ptr,
                     MAX_OPUS_PACKET_SIZE as i32,

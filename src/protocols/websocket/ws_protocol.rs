@@ -412,6 +412,20 @@ impl Protocol for WebSocketProtocol {
         Ok(())
     }
 
+    fn send_wake_word_detected(&mut self, wake_word: &str) -> Result<(), Error> {
+        // 对应 C++ ProtocolWebsocket::SendWakeWordDetected
+        // {"session_id":"...","type":"listen","state":"detect","text":"你好小智"}
+        let message = format!(
+            r##"{{"session_id": "{}",
+    "type": "listen",
+    "state": "detect",
+    "text": "{}"}}"##,
+            self.device_id, wake_word
+        );
+        self.send_text(&message)?;
+        Ok(())
+    }
+
     fn send_start_linstening(&mut self, listening_mode: ListeningMode) -> Result<(), Error> {
         // std::string message = "{\"session_id\":\"" + session_id_ + "\"";
         // message += ",\"type\":\"listen\",\"state\":\"start\"";

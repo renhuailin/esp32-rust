@@ -9,7 +9,7 @@ use esp_idf_sys::es32_component_esp_sr::{
     esp_srmodel_init, ESP_WN_PREFIX,
 };
 use esp_idf_sys::ESP_FAIL;
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::audio::codec::opus::encoder::OpusAudioEncoder;
 use crate::utils::ffi::c_task_trampoline;
@@ -187,26 +187,44 @@ impl WakeWordService {
     /// 开始检测
     pub fn start_detection(&mut self) {
         let mut state = self.state.lock().unwrap();
-        state.is_detecting = true;
+        if !state.is_detecting {
+            state.is_detecting = true;
+            info!("Wake word detection started");
+        }
+        drop(state);
         self.cond.notify_all();
     }
 
     /// 停止检测
     pub fn stop_detection(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        state.is_detecting = false;
+        {
+            let mut state = self.state.lock().unwrap();
+            state.is_detecting = false;
+        }
         // 重置 AFE 缓冲区
         unsafe {
             if !self.afe_data.as_ptr().is_null() {
                 ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
             }
         }
+        info!("Wake word detection stopped");
     }
 
     /// 是否正在检测
     pub fn is_detection_running(&self) -> bool {
         let state = self.state.lock().unwrap();
         state.is_detecting
+    }
+
+    /// 复位 AFE 输入/输出缓冲（不改变检测开关状态）。
+    /// 开机首次启动检测前调用一次，与 Listening -> Idle 路径的 reset 行为对齐。
+    pub fn reset_afe_buffer(&mut self) {
+        unsafe {
+            if !self.afe_data.as_ptr().is_null() {
+                ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
+                info!("AFE buffer reset");
+            }
+        }
     }
 
     /// 喂入音频数据
@@ -295,8 +313,12 @@ impl WakeWordService {
                     drop(state_guard);
 
                     // 阶段2: 获取 AFE 处理结果
-                    let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, u32::MAX);
+                    // 使用有限超时（约 0.5~5 秒，取决于 FreeRTOS tick 频率）而非无限阻塞：
+                    // 1. AFE 数据管道异常时能及时暴露（warn 日志）而不是无声卡死
+                    // 2. stop_detection 之后任务能更快回到等待阶段，避免错过 start 信号
+                    let res = ((*afe_iface).fetch_with_delay.unwrap())(afe_data, 500);
                     if res.is_null() || (*res).ret_value == ESP_FAIL {
+                        warn!("AFE fetch no result in time, detection pipeline may be stalled");
                         continue;
                     }
 

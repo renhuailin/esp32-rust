@@ -19,7 +19,7 @@ use std::{
     ffi::{c_void, CStr, CString},
     ptr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, channel, Receiver, Sender, SyncSender},
         Arc, Mutex, MutexGuard,
     },
@@ -693,6 +693,10 @@ impl Application {
                         error!("Failed to send WakeWordDetected event: {:?}", e);
                     }
                 }));
+                // 开机路径对齐"按键循环"路径：后者回到 Idle 前必然经历过
+                // stop_detection() -> afe reset_buffer()，而开机首次启动没有经历过复位。
+                // 这里显式复位一次，消除两条路径在 AFE 管道状态上的不对称。
+                service.reset_afe_buffer();
                 service.start_detection();
             }
         }
@@ -792,6 +796,9 @@ impl Application {
                                     // 2. 音频通道未打开时先连接服务器
                                     if !self.protocol.is_audio_channel_opened() {
                                         self.set_device_state(DeviceState::Connecting);
+                                        // 先清理旧连接（超时/僵尸状态），
+                                        // 避免在已存在 client 的情况下叠加 websocket 任务
+                                        let _ = self.protocol.close_audio_channel();
                                         match self.protocol.open_audio_channel() {
                                             Ok(true) => {}
                                             _ => {
@@ -1391,16 +1398,19 @@ impl Application {
             }
             DeviceState::Listening => {
                 info!("DeviceState::Listening - Closing audio channel...");
-                // if let Err(e) = self.protocol.close_audio_channel() {
-                //     error!("Failed to close_audio_channel: {:?}", e);
-                // }
-
                 {
                     let mut audio_processor = self.audio_processor.lock().unwrap();
                     audio_processor.stop();
                 }
 
                 self.stop_listening();
+
+                // 对齐 C++ ToggleChatState: Listening -> CloseAudioChannel()
+                // Idle 是纯本地离线状态（唤醒词检测完全不依赖服务器连接），
+                // 下次唤醒词触发时再重新建连（wake handler 中的 open_audio_channel 路径）
+                if let Err(e) = self.protocol.close_audio_channel() {
+                    error!("Failed to close_audio_channel: {:?}", e);
+                }
             }
             _ => {}
         }
@@ -1911,12 +1921,28 @@ fn start_audio_input(
         };
 
         if bytes_read > 0 {
-            if let Ok(samples) = bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
-                let mut guard = wake_word_service.lock().unwrap();
-                if let Some(service) = guard.as_mut() {
-                    let _ = service.feed(&samples);
+            // 心跳日志：用于确认开机后喂料管线是否真正在跑（每 500 次约 16 秒一条）
+            static WAKE_FEED_COUNT: AtomicU32 = AtomicU32::new(0);
+            let feeds = WAKE_FEED_COUNT.fetch_add(1, Ordering::Relaxed);
+            if feeds % 500 == 0 {
+                info!(
+                    "wake feed alive: total {} feeds, need_bytes={}, bytes_read={}",
+                    feeds + 1, need_bytes, bytes_read
+                );
+            }
+            match bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
+                Ok(samples) => {
+                    let mut guard = wake_word_service.lock().unwrap();
+                    if let Some(service) = guard.as_mut() {
+                        let _ = service.feed(&samples);
+                    }
+                }
+                Err(_) => {
+                    warn!("Wake word audio bytes not i16-aligned: {} bytes", bytes_read);
                 }
             }
+        } else {
+            warn!("Wake word codec read returned 0 bytes (input pipeline issue?)");
         }
         return;
     }

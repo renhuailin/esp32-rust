@@ -125,6 +125,7 @@ impl AudioCodec for XiaozhiAudioCodec {
         } else {
             self.input_codec.disable()?;
         }
+        self.input_enabled = enable;
         Ok(())
     }
 

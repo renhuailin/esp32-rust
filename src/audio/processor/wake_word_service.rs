@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::{c_void, CStr, CString};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use esp_idf_sys::es32_component_esp_sr::{
@@ -186,6 +187,17 @@ impl WakeWordService {
 
     /// 开始检测
     pub fn start_detection(&mut self) {
+        // 每次启动检测前复位 AFE 缓冲（清掉 ringbuf 里残留的旧音频），
+        // 对齐开机路径已验证的行为。
+        // 注意：不要在这里调用 disable/enable_wakenet 或 disable/enable_aec！
+        // 实测这两个模块复位 API 在 esp-sr v2.1.4 上会把 wakenet 弄成
+        // 无法唤醒的状态（enable 后检测永久失效），属于禁用操作。
+        unsafe {
+            if !self.afe_data.as_ptr().is_null() {
+                ((*self.afe_iface.as_ptr()).reset_buffer.unwrap())(self.afe_data.as_ptr());
+                info!("AFE buffer reset (start_detection)");
+            }
+        }
         let mut state = self.state.lock().unwrap();
         if !state.is_detecting {
             state.is_detecting = true;
@@ -330,6 +342,32 @@ impl WakeWordService {
                         continue;
                     }
 
+                    // fetch 心跳探针：确认检测循环存活，并观察 AFE 输出内容。
+                    // max_abs 长期为 0 => AFE 输出被静音（AEC 吞掉全部信号）或喂料全零；
+                    // max_abs 正常但无唤醒 => wakenet 模型状态异常。
+                    static FETCH_COUNT: AtomicU32 = AtomicU32::new(0);
+                    let fetches = FETCH_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if fetches % 200 == 0 {
+                        let probe_len =
+                            (*res).data_size as usize / std::mem::size_of::<i16>();
+                        let probe_slice = std::slice::from_raw_parts(
+                            (*res).data as *const i16,
+                            probe_len,
+                        );
+                        let max_abs = probe_slice
+                            .iter()
+                            .map(|s| s.unsigned_abs())
+                            .max()
+                            .unwrap_or(0);
+                        info!(
+                            "afe fetch alive: total {} fetches, wakeup_state={}, data_len={}, max_abs={}",
+                            fetches + 1,
+                            (*res).wakeup_state as i32,
+                            probe_len,
+                            max_abs
+                        );
+                    }
+
                     // 存储唤醒词PCM数据
                     let data_len = (*res).data_size as usize / std::mem::size_of::<i16>();
                     let data_slice =
@@ -342,8 +380,12 @@ impl WakeWordService {
                     if wakeup_state
                         == esp_idf_sys::es32_component_esp_sr::wakenet_state_t_WAKENET_DETECTED
                     {
-                        // 停止检测
+                        // 停止检测：对齐 C++ StopDetection()——清标志位后立即
+                        // reset_buffer，把唤醒词音频从输入 ringbuf 中清掉。
+                        // 否则这些残留数据会冻结整个会话期间，并在下一轮
+                        // start_detection 后被 AFE 首先消费，干扰管道恢复。
                         state_guard.is_detecting = false;
+                        ((*afe_iface).reset_buffer.unwrap())(afe_data);
 
                         // 获取唤醒词索引 (C++: res->wake_word_index - 1)
                         let wake_word_index = (*res).wake_word_index as usize;

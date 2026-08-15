@@ -693,10 +693,8 @@ impl Application {
                         error!("Failed to send WakeWordDetected event: {:?}", e);
                     }
                 }));
-                // 开机路径对齐"按键循环"路径：后者回到 Idle 前必然经历过
-                // stop_detection() -> afe reset_buffer()，而开机首次启动没有经历过复位。
-                // 这里显式复位一次，消除两条路径在 AFE 管道状态上的不对称。
-                service.reset_afe_buffer();
+                // start_detection 内部现在会先复位 AFE 缓冲再启动检测，
+                // 开机路径与按键路径行为一致，无需在此显式复位。
                 service.start_detection();
             }
         }
@@ -925,7 +923,7 @@ impl Application {
                         }
 
                         AppEvent::WebSocketClosed => {
-                            info!("WebSocketClosed");
+                            info!("WebSocketClosed, state={:?}", self.state);
                             // board.SetPowerSaveMode(true);
                             // Schedule([this]() {
                             //     auto display = Board::GetInstance().GetDisplay();
@@ -1079,6 +1077,11 @@ impl Application {
                                                                 DeviceState::Listening,
                                                             );
                                                         }
+                                                    } else {
+                                                        warn!(
+                                                            "tts stop 被忽略：当前状态={:?}（预期 Speaking）",
+                                                            self.state
+                                                        );
                                                     }
                                                 }
                                                 // TODO:: 处理其它文本
@@ -1921,17 +1924,29 @@ fn start_audio_input(
         };
 
         if bytes_read > 0 {
-            // 心跳日志：用于确认开机后喂料管线是否真正在跑（每 500 次约 16 秒一条）
-            static WAKE_FEED_COUNT: AtomicU32 = AtomicU32::new(0);
-            let feeds = WAKE_FEED_COUNT.fetch_add(1, Ordering::Relaxed);
-            if feeds % 500 == 0 {
-                info!(
-                    "wake feed alive: total {} feeds, need_bytes={}, bytes_read={}",
-                    feeds + 1, need_bytes, bytes_read
-                );
-            }
             match bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
                 Ok(samples) => {
+                    // 心跳+内容探针：确认喂料管线在跑，并观察喂入数据的幅度。
+                    // max_abs≈0 且几乎全零 => 麦克风数据全零（ES7210/I2S 问题）
+                    static WAKE_FEED_COUNT: AtomicU32 = AtomicU32::new(0);
+                    let feeds = WAKE_FEED_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if feeds % 200 == 0 {
+                        let max_abs = samples
+                            .iter()
+                            .map(|s| s.unsigned_abs())
+                            .max()
+                            .unwrap_or(0);
+                        let zeros = samples.iter().filter(|&&s| s == 0).count();
+                        info!(
+                            "wake feed alive: total {} feeds, need_bytes={}, bytes_read={}, max_abs={}, zeros={}/{}",
+                            feeds + 1,
+                            need_bytes,
+                            bytes_read,
+                            max_abs,
+                            zeros,
+                            samples.len()
+                        );
+                    }
                     let mut guard = wake_word_service.lock().unwrap();
                     if let Some(service) = guard.as_mut() {
                         let _ = service.feed(&samples);

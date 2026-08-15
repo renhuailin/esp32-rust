@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +30,10 @@ pub struct WebSocketProtocol {
     on_network_error: Option<Box<dyn FnMut(&str) -> Result<(), Error> + Send + 'static>>,
     last_incoming_time: Arc<Mutex<Option<Instant>>>, // 上一次收到服务器端数据的时间
     server_hello_received: Arc<Mutex<bool>>,
+    /// 连接世代计数：每次建立/关闭连接时递增。
+    /// 用于丢弃旧连接销毁过程中迟到的 Disconnected/Closed 事件，
+    /// 避免其把新会话的状态打回 Idle。
+    conn_epoch: Arc<AtomicU32>,
 }
 
 impl WebSocketProtocol {
@@ -55,6 +60,7 @@ impl WebSocketProtocol {
             last_incoming_time: Arc::new(Mutex::new(None)),
             server_hello_received: Arc::new(Mutex::new(false)),
             on_network_error: None,
+            conn_epoch: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -105,6 +111,7 @@ impl WebSocketProtocol {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_error(&mut self, error: &str) {
         let _ = self.on_network_error.as_mut().unwrap()(error);
     }
@@ -118,8 +125,12 @@ impl Protocol for WebSocketProtocol {
                 match client.send(FrameType::Text(false), text.as_bytes()) {
                     Ok(_) => info!("WebSocketProtocol: Hello message sent!"),
                     Err(e) => {
-                        self.set_error(&format!("Send error: {:?}", e));
-                        info!("WebSocketProtocol: Send error: {:?}", e);
+                        // 对齐 C++ 参考实现：文本发送失败只记录日志，不升级为网络错误。
+                        // 旧行为：set_error -> ProtocolNetworkError -> 主循环强制切 Idle，
+                        // 典型表现是"我在呢"播放完后（tts stop -> Listening 需要重发
+                        // listen start），恰逢发送瞬时失败，设备直接回 Idle 而非 Listening。
+                        // 连接真实断开由 websocket 的 Disconnected/Closed 事件感知。
+                        error!("WebSocketProtocol: Send text error: {:?}", e);
                     }
                 }
             } else {
@@ -181,6 +192,12 @@ impl Protocol for WebSocketProtocol {
 
         let last_incoming_time = self.last_incoming_time.clone();
 
+        // 连接世代 +1 并捕获到本次回调闭包中：
+        // 只有世代仍为最新时，Disconnected/Close/Closed 事件才会上报，
+        // 从而丢弃旧连接销毁时迟到的断开事件（否则会把新会话打回 Idle）。
+        let conn_epoch = Arc::clone(&self.conn_epoch);
+        let my_epoch = conn_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+
         // let mut on_incoming_text_handler = self.on_incoming_text.take();
         // let mut on_incoming_audio_handler = self.on_incoming_audio.take();
 
@@ -214,16 +231,28 @@ impl Protocol for WebSocketProtocol {
                             }
                         }
                         WebSocketEventType::Disconnected => {
-                            // info!("Websocket disconnected");
+                            // 旧连接销毁时迟到的断开事件直接丢弃，防止误伤新会话
+                            if conn_epoch.load(Ordering::SeqCst) != my_epoch {
+                                info!("Ignore stale websocket Disconnected event");
+                                return;
+                            }
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Close(reason) => {
+                            if conn_epoch.load(Ordering::SeqCst) != my_epoch {
+                                info!("Ignore stale websocket Close event");
+                                return;
+                            }
                             info!("Websocket close, reason: {reason:?}");
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
                         WebSocketEventType::Closed => {
+                            if conn_epoch.load(Ordering::SeqCst) != my_epoch {
+                                info!("Ignore stale websocket Closed event");
+                                return;
+                            }
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                             info!("Websocket closed");
                         }
@@ -280,9 +309,14 @@ impl Protocol for WebSocketProtocol {
                                 .unwrap();
                         }
                         WebSocketEventType::Ping => {
+                            // 心跳也算"连接活跃"：否则空闲 120 秒后（服务器只发 ping
+                            // 不发业务数据时）is_timeout() 误判超时，下次唤醒会白白
+                            // 走一遍 close + 重连流程
+                            *last_incoming_time.lock().unwrap() = Some(Instant::now());
                             info!("Websocket ping");
                         }
                         WebSocketEventType::Pong => {
+                            *last_incoming_time.lock().unwrap() = Some(Instant::now());
                             info!("Websocket pong");
                         }
                     }
@@ -350,6 +384,8 @@ impl Protocol for WebSocketProtocol {
     }
 
     fn close_audio_channel(&mut self) -> Result<(), Error> {
+        // 递增连接世代：使旧连接销毁过程中迟到的断开事件全部失效
+        self.conn_epoch.fetch_add(1, Ordering::SeqCst);
         if self.is_connected {
             if let Some(_) = self.client.take() {
                 //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。

@@ -817,12 +817,10 @@ impl Application {
                                             Ok(true) => {}
                                             _ => {
                                                 error!("Failed to open audio channel");
+                                                self.set_device_state(DeviceState::Idle);
                                                 // 连接失败，恢复唤醒检测等待下次唤醒
-                                                if let Some(service) = self
-                                                    .wake_word_service
-                                                    .lock()
-                                                    .unwrap()
-                                                    .as_mut()
+                                                if let Some(service) =
+                                                    self.wake_word_service.lock().unwrap().as_mut()
                                                 {
                                                     service.start_detection();
                                                 }
@@ -1078,9 +1076,8 @@ impl Application {
                                                     // 表现为"话没说完就进 Listening"。正确做法：等 audio_loop
                                                     // 线程把队列消费完（队列为空且不在解码中），限时保护防卡死。
                                                     {
-                                                        let deadline =
-                                                            std::time::Instant::now()
-                                                                + Duration::from_millis(3000);
+                                                        let deadline = std::time::Instant::now()
+                                                            + Duration::from_millis(3000);
                                                         loop {
                                                             let queue_empty = self
                                                                 .shared_audio_state
@@ -1095,8 +1092,7 @@ impl Application {
                                                             if queue_empty && idle {
                                                                 break;
                                                             }
-                                                            if std::time::Instant::now()
-                                                                >= deadline
+                                                            if std::time::Instant::now() >= deadline
                                                             {
                                                                 warn!(
                                                                     "TTS drain timeout, dropping tail packets"
@@ -2051,7 +2047,10 @@ fn start_audio_input(
                     }
                 }
                 Err(_) => {
-                    warn!("Wake word audio bytes not i16-aligned: {} bytes", bytes_read);
+                    warn!(
+                        "Wake word audio bytes not i16-aligned: {} bytes",
+                        bytes_read
+                    );
                 }
             }
         } else {

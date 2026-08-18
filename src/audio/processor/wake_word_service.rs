@@ -354,24 +354,21 @@ impl WakeWordService {
                     static FETCH_COUNT: AtomicU32 = AtomicU32::new(0);
                     let fetches = FETCH_COUNT.fetch_add(1, Ordering::Relaxed);
                     if fetches % 50 == 0 {
-                        let probe_len =
-                            (*res).data_size as usize / std::mem::size_of::<i16>();
-                        let probe_slice = std::slice::from_raw_parts(
-                            (*res).data as *const i16,
-                            probe_len,
-                        );
+                        let probe_len = (*res).data_size as usize / std::mem::size_of::<i16>();
+                        let probe_slice =
+                            std::slice::from_raw_parts((*res).data as *const i16, probe_len);
                         let max_abs = probe_slice
                             .iter()
                             .map(|s| s.unsigned_abs())
                             .max()
                             .unwrap_or(0);
-                        info!(
-                            "afe fetch alive: total {} fetches, wakeup_state={}, data_len={}, max_abs={}",
-                            fetches + 1,
-                            (*res).wakeup_state as i32,
-                            probe_len,
-                            max_abs
-                        );
+                        // info!(
+                        //     "afe fetch alive: total {} fetches, wakeup_state={}, data_len={}, max_abs={}",
+                        //     fetches + 1,
+                        //     (*res).wakeup_state as i32,
+                        //     probe_len,
+                        //     max_abs
+                        // );
                     }
 
                     // 存储唤醒词PCM数据

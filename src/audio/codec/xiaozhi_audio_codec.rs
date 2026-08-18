@@ -16,7 +16,7 @@ use crate::{
 };
 use anyhow::{Error, Ok, Result};
 use esp_idf_hal::{
-    delay::{Delay, BLOCK},
+    delay::Delay,
     i2c::I2cDriver,
     i2s::{I2sBiDir, I2sDriver},
 };
@@ -24,6 +24,30 @@ use log::{error, info};
 
 type I2cProxy = shared_bus::I2cProxy<'static, Mutex<I2cDriver<'static>>>;
 const DEFAULT_OUTPUT_VOLUME: u8 = 30;
+
+/// I2S TX 写超时（ticks）。
+/// 正常写入 4096B @16kHz/16bit/stereo（≈64ms 音频）远用不了这么久；
+/// 超时说明 TX DMA 已停摆，必须放弃写入——否则会连锁死锁：
+/// audio_loop 持 codec 锁卡死 → 主循环 play_silence 拿不到锁 → 整机无响应
+/// （症状：持续嗒嗒响 + 按键失灵 + websocket 仍在收包）。
+const fn ms_to_ticks(ms: u32) -> u32 {
+    let t = ms * esp_idf_sys::configTICK_RATE_HZ / 1000;
+    if t < 1 {
+        1
+    } else {
+        t
+    }
+}
+
+/// I2S TX 写超时（ticks）。
+/// 正常写入 4096B @16kHz/16bit/stereo（≈64ms 音频）远用不了这么久；
+/// 超时说明 TX DMA 已停摆，必须放弃写入——否则会连锁死锁：
+/// audio_loop 持 codec 锁卡死 → 主循环 play_silence 拿不到锁 → 整机无响应
+/// （症状：持续嗒嗒响 + 按键失灵 + websocket 仍在收包）。
+const I2S_WRITE_TIMEOUT_TICKS: u32 = ms_to_ticks(250);
+/// I2S RX 读超时。原值 1000 ticks 在 100Hz tick 下是 10 秒，
+/// RX 卡死会让 audio_loop 持 codec 锁 10 秒，播放随之断流。
+const I2S_READ_TIMEOUT_TICKS: u32 = ms_to_ticks(500);
 pub struct XiaozhiAudioCodec {
     input_codec: Es7210<I2cProxy>,
     output_codec: Es8311<I2cProxy>,
@@ -180,7 +204,7 @@ impl AudioCodec for XiaozhiAudioCodec {
     fn read_audio_data(&mut self, mut buffer: &mut Vec<u8>) -> Result<usize, Error> {
         let i2s_driver_arc = self.i2s_driver.clone();
         let mut i2s_driver = i2s_driver_arc.lock().unwrap();
-        let bytes_read = i2s_driver.read(&mut buffer, 1000)?;
+        let bytes_read = i2s_driver.read(&mut buffer, I2S_READ_TIMEOUT_TICKS)?;
         return Ok(bytes_read);
     }
 
@@ -188,15 +212,12 @@ impl AudioCodec for XiaozhiAudioCodec {
         const CHUNK_SIZE: usize = 4096;
         let i2s_driver = self.i2s_driver.clone();
         for chunk in audio_data.chunks(CHUNK_SIZE) {
-            // 4. 逐块写入I2S驱动
-            match i2s_driver.lock().unwrap().write(chunk, BLOCK) {
-                Result::Ok(bytes_written) => {
-                    // 打印一些进度信息，方便调试
-                    // info!("Successfully wrote {} bytes to I2S.", bytes_written);
-                }
+            // 4. 逐块写入I2S驱动（限时，见 I2S_WRITE_TIMEOUT_TICKS 注释）
+            match i2s_driver.lock().unwrap().write(chunk, I2S_WRITE_TIMEOUT_TICKS) {
+                Result::Ok(_bytes_written) => {}
                 Err(e) => {
-                    // 如果在写入过程中出错，打印错误并跳出循环
-                    info!("I2S write error on a chunk: {:?}", e);
+                    // TX 停摆：丢弃本包剩余数据，尽快释放 codec 锁，避免整机死锁
+                    error!("I2S TX stalled, dropping rest of audio data: {:?}", e);
                     break;
                 }
             }
@@ -215,15 +236,10 @@ impl AudioCodec for XiaozhiAudioCodec {
     fn test_play_pcm(&mut self, data: &[u8]) -> Result<(), Error> {
         const CHUNK_SIZE: usize = 4096;
         for chunk in data.chunks(CHUNK_SIZE) {
-            // 4. 逐块写入I2S驱动
-            match self.i2s_driver.lock().unwrap().write(chunk, BLOCK) {
-                Result::Ok(bytes_written) => {
-                    // 打印一些进度信息，方便调试
-                    // info!("Successfully wrote {} bytes to I2S.", bytes_written);
-                }
+            match self.i2s_driver.lock().unwrap().write(chunk, I2S_WRITE_TIMEOUT_TICKS) {
+                Result::Ok(_bytes_written) => {}
                 Err(e) => {
-                    // 如果在写入过程中出错，打印错误并跳出循环
-                    info!("I2S write error on a chunk: {:?}", e);
+                    error!("I2S TX stalled (test_play_pcm), dropping rest: {:?}", e);
                     break;
                 }
             }

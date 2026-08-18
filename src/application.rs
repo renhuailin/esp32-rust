@@ -2012,14 +2012,14 @@ fn start_audio_input(
                             }
                         }
                         let zeros = samples.iter().filter(|&&s| s == 0).count();
-                        info!(
-                            "wake feed alive: total {} feeds, ch0(MIC1) max_abs={}, ch1(ref?) max_abs={}, zeros={}/{}",
-                            feeds + 1,
-                            max0,
-                            max1,
-                            zeros,
-                            samples.len()
-                        );
+                        // info!(
+                        //     "wake feed alive: total {} feeds, ch0(MIC1) max_abs={}, ch1(ref?) max_abs={}, zeros={}/{}",
+                        //     feeds + 1,
+                        //     max0,
+                        //     max1,
+                        //     zeros,
+                        //     samples.len()
+                        // );
                     }
                     // 按需去交错：诊断模式（afe_channels=1 < codec_channels）只取 ch0
                     let mono_buffer: Vec<i16>;

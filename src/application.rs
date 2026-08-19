@@ -20,11 +20,11 @@ use std::{
     ptr,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
-        mpsc::{self, channel, Receiver, Sender, SyncSender},
+        mpsc::{self, channel, Receiver, RecvTimeoutError, Sender, SyncSender},
         Arc, Mutex, MutexGuard,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use esp_idf_sys::{
@@ -80,6 +80,27 @@ const JITTER_TARGET_BYTES: usize = 15360;
 /// 稳态库存 + DMA 残留，削峰后 Speaking→Listening 切换从最深 ~1.5s
 /// 恢复到 ~0.4s，且不损失抗抖动能力。
 const PLAYBACK_BACKLOG_LIMIT_BYTES: usize = 19200;
+
+/// ── 屏幕背光 idle 渐暗（对齐 C++ 固件 jianglian-s3cam 板的 PowerSaveTimer 行为）──
+/// C++ 原版：PowerSaveTimer(60s) 超时 → SetBrightness(10) 渐暗 + sleepy 表情；
+/// WakeUp()（boot 键等）→ RestoreBrightness() 渐亮。
+/// 进入 Idle 停留该时长后开始渐暗；期间任何状态变化（唤醒/boot 键）
+/// 都会把目标亮度拉回 ACTIVE。
+/// 活跃背光亮度（与 st7789 开机初始亮度一致；C++ 原版默认 75，此处取
+/// 板文件注释的 50%）
+const BACKLIGHT_ACTIVE_PERCENT: i32 = 60;
+/// Idle 渐暗的最终亮度：0 = 彻底熄灭背光（本板低有效，
+/// duty 100% 输出恒高 → 背光完全关闭）
+const BACKLIGHT_IDLE_DIM_PERCENT: i32 = 0;
+/// 渐暗台阶表：每满一个 BACKLIGHT_DIM_STEP_INTERVAL 整级跳降一次
+/// （无渐变微调），用户能明显感到"过 1 分钟暗了一档"。
+/// 50% →(60s) 40% →(120s) 30% →(180s) 20% →(240s) 10% →(300s) 0%，
+/// 5 分钟彻底变暗。末级须等于 BACKLIGHT_IDLE_DIM_PERCENT。
+const BACKLIGHT_DIM_LEVELS: [i32; 5] = [40, 30, 20, 10, 0];
+/// 台阶间隔：进入 Idle 后每满此时长降一级
+const BACKLIGHT_DIM_STEP_INTERVAL: Duration = Duration::from_secs(60);
+/// 事件循环背光检查周期（recv_timeout 超时即 tick）
+const BACKLIGHT_TICK: Duration = Duration::from_millis(250);
 
 // 共享状态结构体,主要用于音频测试模式保存PCM数据。
 pub struct SharedAudioState {
@@ -325,6 +346,12 @@ pub struct Application {
     protocol: WebSocketProtocol,
     board: Box<dyn Board<WifiDriver = Esp32WifiDriver, DisplayDriver = LcdSt7789>>,
 
+    // ── 屏幕背光 idle 渐暗状态 ──
+    // 进入 Idle 的时刻（每满台阶间隔降一级；离开 Idle 清空）
+    idle_since: Option<Instant>,
+    // 当前背光亮度百分比（0-100）：阶梯式下降，整级跳变
+    backlight_level: i32,
+
     //用于处理内部事件的channel
     inner_sender: Sender<AppEvent>,
     inner_receiver: Receiver<AppEvent>,
@@ -496,6 +523,8 @@ impl Application {
             protocol,
             // device_id: mac_address,
             board,
+            idle_since: None,
+            backlight_level: BACKLIGHT_ACTIVE_PERCENT,
             inner_sender,
             inner_receiver,
             decode_task_sender,
@@ -839,9 +868,21 @@ impl Application {
 
         let codec_clone_for_pcm_player = Arc::clone(&self.board.get_audio_codec());
 
+        // 防御：进入事件循环时若已是 Idle（开机后无状态切换），
+        // set_device_state(Idle) 因状态相同不会触发，补设计时起点
+        if self.state == DeviceState::Idle && self.idle_since.is_none() {
+            self.idle_since = Some(Instant::now());
+        }
+
         loop {
             let opus_decoder = Arc::clone(&self.opus_decoder);
-            match self.inner_receiver.recv() {
+            // 背光 tick：仅 Idle 计时/渐暗期间工作（idle_since 有值）。
+            // 活跃状态零调用零开销；渐暗到底后 update_backlight 自行
+            // 清掉 idle_since，回到零工作状态，直到下次进入 Idle
+            if self.idle_since.is_some() {
+                self.update_backlight();
+            }
+            match self.inner_receiver.recv_timeout(BACKLIGHT_TICK) {
                 Ok(event) => {
                     match event {
                         AppEvent::WakeWordDetected(wake_word) => {
@@ -1366,7 +1407,10 @@ impl Application {
                         }
                     }
                 }
-                Err(_) => {
+                Err(RecvTimeoutError::Timeout) => {
+                    // 空闲 tick：背光渐变已在循环体头部驱动（见上）
+                }
+                Err(RecvTimeoutError::Disconnected) => {
                     info!("Event channel closed, exiting event loop");
                 }
             }
@@ -1386,6 +1430,61 @@ impl Application {
     }
 
     // private methods
+
+    /// 阶梯式渐暗：仅 Idle 期间由 event_loop 调用（调用侧以
+    /// idle_since.is_some() 为条件，活跃状态零调用、零开销）。
+    /// 每满 BACKLIGHT_DIM_STEP_INTERVAL 按台阶表整级跳降一次
+    /// （每分钟一次寄存器写，降幅明显可感知）；降到最末级（0%）
+    /// 后清掉 idle_since 收工，此后不再被调用，直到下次进入 Idle。
+    fn update_backlight(&mut self) {
+        let Some(idle_start) = self.idle_since else {
+            return;
+        };
+        // 已满的台阶数：0 = 第一分钟等待期（维持 ACTIVE），未到降级时间
+        let step = idle_start.elapsed().as_secs() / BACKLIGHT_DIM_STEP_INTERVAL.as_secs();
+        if step == 0 {
+            return;
+        }
+        // 目标级：超过台阶表长度后钳在末级（0%）
+        let target = BACKLIGHT_DIM_LEVELS
+            .get((step as usize).wrapping_sub(1))
+            .copied()
+            .unwrap_or(BACKLIGHT_IDLE_DIM_PERCENT);
+        if self.backlight_level == target {
+            // 已到最后一级（彻底变暗）：收工，调用侧条件随之失效
+            if target == BACKLIGHT_IDLE_DIM_PERCENT {
+                self.idle_since = None;
+            }
+            return;
+        }
+        // 整级跳降：一次写到位，变化肉眼明显
+        if let Err(err) = self.board.get_display().set_brightness(target) {
+            warn!("update_backlight: set_brightness failed: {:?}", err);
+            return;
+        }
+        info!(
+            "backlight dim step: {}% -> {}%",
+            self.backlight_level, target
+        );
+        self.backlight_level = target;
+    }
+
+    /// 背光恢复：离开 Idle（唤醒/boot 键）时由 set_device_state 一次性
+    /// 调用，瞬间跳回全亮（不做渐亮），无周期性开销
+    fn restore_backlight(&mut self) {
+        if self.backlight_level != BACKLIGHT_ACTIVE_PERCENT {
+            if let Err(err) = self
+                .board
+                .get_display()
+                .set_brightness(BACKLIGHT_ACTIVE_PERCENT)
+            {
+                warn!("restore_backlight: set_brightness failed: {:?}", err);
+                return;
+            }
+            self.backlight_level = BACKLIGHT_ACTIVE_PERCENT;
+        }
+    }
+
     fn set_device_state(&mut self, state: DeviceState) {
         if self.state == state {
             return;
@@ -1394,8 +1493,18 @@ impl Application {
         let previous_state = self.state.clone();
         self.state = state;
 
+        // 背光：离开 Idle（唤醒词/boot 键切换状态）立即恢复全亮，
+        // 一次性调用，无周期开销
+        if self.state != DeviceState::Idle {
+            self.idle_since = None;
+            self.restore_backlight();
+        }
+
         match self.state {
             DeviceState::Idle => {
+                // 背光：记录进入 Idle 的时刻，每满一个台阶间隔
+                // update_backlight 整级跳降一次
+                self.idle_since = Some(Instant::now());
                 info!(
                     "Device state changed from {:?} to {:?}",
                     previous_state, self.state

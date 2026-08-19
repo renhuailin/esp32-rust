@@ -37,6 +37,8 @@ pub type St7789Display = mipidsi::Display<
 pub struct LcdSt7789 {
     display: St7789Display,
     ledc_driver: LedcDriver<'static>,
+    // 当前背光亮度百分比（0-100），与 LEDC 占空比线性映射
+    brightness_percent: i32,
 }
 
 const W: i32 = 240;
@@ -67,9 +69,12 @@ impl LcdSt7789 {
         // let reset_pin: Option<ConcreteRstPin> = None;
 
         // 3. 设置亮度 (通过设置占空比)
+        // 本板背光为低有效（C++ 原版 DISPLAY_BACKLIGHT_OUTPUT_INVERT=true，
+        // 靠硬件 output_invert 标志反转 PWM 极性；esp-idf-hal 未暴露该标志，
+        // 需软件反转占空比：亮度越高 duty 越低，duty=0 即全亮）。
+        // 初始 50% 亮度。运行时亮度由 Application::update_backlight 接管。
         let max_duty = ledc_driver.get_max_duty();
-        ledc_driver.set_duty(max_duty * 0 / 4).unwrap(); // 设置为50%的亮度
-                                                         // ledc_driver.set_duty(max_duty).unwrap();
+        ledc_driver.set_duty(max_duty / 2).unwrap();
 
         // let mut display = Builder::st7789(di)
         //     .with_display_size(320, 240)
@@ -140,7 +145,26 @@ impl LcdSt7789 {
         Ok(Self {
             display,
             ledc_driver,
+            brightness_percent: 50,
         })
+    }
+
+    /// 设置背光亮度（0-100，超出自动钳位）。
+    /// 注意：本板背光低有效（active-low），占空比需反转映射：
+    /// brightness 100% → duty 0%，brightness 10% → duty 90%。
+    /// （C++ 原版用 LEDC 硬件 output_invert 标志实现同样效果）
+    /// 供 Application::update_backlight 周期调用实现 idle 渐暗/唤醒恢复。
+    pub fn set_brightness(&mut self, percent: i32) -> Result<()> {
+        let percent = percent.clamp(0, 100);
+        let duty = self.ledc_driver.get_max_duty() * (100 - percent as u32) / 100;
+        self.ledc_driver.set_duty(duty)?;
+        self.brightness_percent = percent;
+        Ok(())
+    }
+
+    /// 当前背光亮度百分比（0-100）
+    pub fn brightness(&self) -> i32 {
+        self.brightness_percent
     }
 
     // pub fn init(

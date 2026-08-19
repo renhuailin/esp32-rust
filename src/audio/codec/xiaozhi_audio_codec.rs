@@ -213,7 +213,11 @@ impl AudioCodec for XiaozhiAudioCodec {
         let i2s_driver = self.i2s_driver.clone();
         for chunk in audio_data.chunks(CHUNK_SIZE) {
             // 4. 逐块写入I2S驱动（限时，见 I2S_WRITE_TIMEOUT_TICKS 注释）
-            match i2s_driver.lock().unwrap().write(chunk, I2S_WRITE_TIMEOUT_TICKS) {
+            match i2s_driver
+                .lock()
+                .unwrap()
+                .write(chunk, I2S_WRITE_TIMEOUT_TICKS)
+            {
                 Result::Ok(_bytes_written) => {}
                 Err(e) => {
                     // TX 停摆：丢弃本包剩余数据，尽快释放 codec 锁，避免整机死锁
@@ -236,7 +240,12 @@ impl AudioCodec for XiaozhiAudioCodec {
     fn test_play_pcm(&mut self, data: &[u8]) -> Result<(), Error> {
         const CHUNK_SIZE: usize = 4096;
         for chunk in data.chunks(CHUNK_SIZE) {
-            match self.i2s_driver.lock().unwrap().write(chunk, I2S_WRITE_TIMEOUT_TICKS) {
+            match self
+                .i2s_driver
+                .lock()
+                .unwrap()
+                .write(chunk, I2S_WRITE_TIMEOUT_TICKS)
+            {
                 Result::Ok(_bytes_written) => {}
                 Err(e) => {
                     error!("I2S TX stalled (test_play_pcm), dropping rest: {:?}", e);

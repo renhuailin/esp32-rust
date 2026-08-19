@@ -1,10 +1,9 @@
 // src/es8311.rs
-use crate::audio::codec::es8311::volume_manager::load_volume_from_nvs;
+use crate::audio::codec::es8311::volume_manager::{load_volume_from_nvs, save_volume_to_nvs};
 use crate::audio::codec::es8311::{reg::*, volume_manager};
-use crate::setting::nvs_setting::NvsSetting;
 use embedded_hal::blocking::delay::DelayUs;
 use embedded_hal::blocking::i2c::{Write, WriteRead};
-use log::{error, info};
+use log::info;
 // 定义错误类型，这里我们直接用I2C的错误类型
 pub type Result<T, E> = core::result::Result<T, E>;
 
@@ -15,6 +14,8 @@ const ADDR: u8 = 0x18;
 pub struct Es8311<I2C> {
     i2c: I2C,
     is_open: bool,
+    /// 最近一次设置的输出音量，enable() 恢复时需要回写（suspend 会清零音量寄存器）
+    current_volume: u8,
 }
 
 impl<I2C, E> Es8311<I2C>
@@ -26,6 +27,7 @@ where
         Self {
             i2c,
             is_open: false,
+            current_volume: volume_manager::DEFAULT_OUTPUT_VOLUME,
         }
     }
 
@@ -96,6 +98,11 @@ where
     }
 
     pub fn enable(&mut self) -> Result<(), E> {
+        // suspend() 会把 REG_00 打到 0x1F（bit7=0，芯片处于掉电/复位态）。
+        // C++ es8311_control_resume 的第一句就是显式写 0x80（上电 + slave 模式），
+        // set_master_mode 的读-改-写无法把 bit7 置回 1，必须在这里恢复。
+        self.write_reg(ES8311_RESET_REG_00, 0x80)?;
+
         // int ret = ESP_CODEC_DEV_OK;
         // int adc_iface = 0, dac_iface = 0;
         // int regv = 0x80;
@@ -255,6 +262,10 @@ where
         self.write_reg(ES8311_DAC_REG_37, 0x08)?;
         self.write_reg(ES8311_GP_REG_45, 0x00)?;
 
+        // suspend() 已把 DAC 音量寄存器(REG_32)清零(-95.5dB 静音)，
+        // esp_codec_dev 框架在 open 后会自动重写音量；这里手动恢复最近一次的音量。
+        self.set_voice_volume(self.current_volume)?;
+
         self.is_open = true;
 
         Ok(())
@@ -327,11 +338,13 @@ where
     pub fn set_voice_volume(&mut self, volume: u8) -> Result<(), E> {
         info!("Setting voice volume to: {}", volume);
         let percent: u8 = volume.min(100).max(0); // 确保值在范围内
+        self.current_volume = percent; // 记录，供 enable() 从 suspend 恢复时回写
 
         let vol = 255 as u16 * percent as u16 / 100 as u16; //255 = 0xFF - 0x00
         let value = vol as u8;
 
         self.write_reg(ES8311_DAC_VOLUME_REG_32, value)?;
+        let _ = save_volume_to_nvs(volume);
         Ok(())
     }
 
@@ -342,7 +355,11 @@ where
             self.set_voice_volume(0)
         } else {
             // 这里可以恢复到之前的音量，或者一个默认音量
-            self.set_voice_volume(60)
+            if let Ok(volume) = load_volume_from_nvs() {
+                self.set_voice_volume(volume)
+            } else {
+                self.set_voice_volume(volume_manager::DEFAULT_OUTPUT_VOLUME)
+            }
         }
     }
 

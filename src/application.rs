@@ -102,6 +102,11 @@ const BACKLIGHT_DIM_STEP_INTERVAL: Duration = Duration::from_secs(60);
 /// 事件循环背光检查周期（recv_timeout 超时即 tick）
 const BACKLIGHT_TICK: Duration = Duration::from_millis(250);
 
+/// 输出静默关断阈值（对齐 C++ max_silence_seconds = 10）：
+/// Idle 且解码队列为空、距上次音频输出超过此时长 → 关闭 codec
+/// 输出通道（DAC/PA 省电）。reset_decoder 时重新使能，无感恢复
+const MAX_OUTPUT_IDLE: Duration = Duration::from_secs(10);
+
 // 共享状态结构体,主要用于音频测试模式保存PCM数据。
 pub struct SharedAudioState {
     pub buffer: Mutex<AudioBuffer>,
@@ -128,6 +133,13 @@ pub struct SharedAudioState {
     /// 防止打断后 channel 库存里的旧音频继续播出（最多 25 包/1.5s）。
     /// 旧代数的包仍计数 played，保持 sent/played 水位配对。
     pub play_epoch: AtomicUsize,
+    /// 最近一次音频输出活动的时刻（对应 C++ last_output_time_）：
+    /// Idle 且超 MAX_OUTPUT_IDLE 无输出则关闭 codec 输出通道省电；
+    /// reset_decoder（每次起播）时刷新并重新使能输出
+    pub last_output_time: Mutex<Instant>,
+    /// 设备是否处于 Idle 状态（set_device_state 同步）：
+    /// 供 audio_loop 线程做输出静默关断判断（对齐 C++ device_state_ == kDeviceStateIdle）
+    pub is_device_idle: AtomicBool,
 }
 
 impl SharedAudioState {
@@ -147,6 +159,8 @@ impl SharedAudioState {
             pcm_sent_bytes: 0.into(),
             pcm_played_bytes: 0.into(),
             play_epoch: 0.into(),
+            last_output_time: Mutex::new(Instant::now()),
+            is_device_idle: true.into(),
         }
     }
 }
@@ -1500,6 +1514,12 @@ impl Application {
             self.restore_backlight();
         }
 
+        // 同步 Idle 标记到音频线程：供输出静默关断判断
+        // （对齐 C++ OnAudioOutput 的 device_state_ == kDeviceStateIdle）
+        self.shared_audio_state
+            .is_device_idle
+            .store(self.state == DeviceState::Idle, Ordering::SeqCst);
+
         match self.state {
             DeviceState::Idle => {
                 // 背光：记录进入 Idle 的时刻，每满一个台阶间隔
@@ -1772,7 +1792,9 @@ impl Application {
             .unwrap()
             .clear();
         // self.audio_decode_cv.lock().unwrap().notify_all();
-        // self.last_output_time = Instant::now();
+        // 对齐 C++：起播前刷新输出计时并重新使能输出
+        // （若 Idle 静默期间输出被关闭，此处恢复）
+        *self.shared_audio_state.last_output_time.lock().unwrap() = Instant::now();
         self.board
             .get_audio_codec()
             .lock()
@@ -2033,18 +2055,24 @@ fn audio_loop(
         let codec_arc = Arc::clone(&audio_codec);
         if codec_arc.lock().unwrap().output_enabled() {
             output_worked = start_audio_output(
-                // codec_arc,
+                &codec_arc,
                 // audio_processor_arc.clone(),
-                audio_state,
+                audio_state.clone(),
                 &mut opus_decoder,
                 &mut shared_decode_buffer,
                 // &mut pcm_buffer,
                 pcm_tx,
                 // &mut cache_packet_count,
             );
-        } else {
-            info!("application: output_enabled: false");
+            if output_worked {
+                // 本轮有音频输出活动，刷新静默计时
+                // （对应 C++ last_output_time_，防止播放中被误关断）
+                *audio_state.last_output_time.lock().unwrap() = Instant::now();
+            }
         }
+        // else {
+        //     info!("application: output_enabled: false");
+        // }
 
         // 节拍原则：任何阻塞式音频工作发生时，其阻塞时长本身就是节拍器
         // （codec read 等 DMA 积累 / pcm send 背压），绝不能再叠加 sleep——
@@ -2058,7 +2086,7 @@ fn audio_loop(
 }
 
 fn start_audio_output(
-    // codec_arc: Arc<Mutex<dyn AudioCodec + 'static>>,
+    codec: &Arc<Mutex<dyn AudioCodec>>,
     // audio_processor: Arc<Mutex<dyn AudioProcessor + 'static>>,
     share_audio_state: Arc<SharedAudioState>,
     opus_decoder: &mut OpusAudioDecoder,
@@ -2081,7 +2109,19 @@ fn start_audio_output(
         .unwrap()
         .is_empty()
     {
-        // info!("application: audio_decode_queue is empty");
+        // 对齐 C++ OnAudioOutput 空队列分支：Idle 且长时间无音频输出，
+        // 关闭 codec 输出通道（DAC/PA 省电）。reset_decoder 起播时重新
+        // 使能（含 enable_output(true)），用户无感知
+        if share_audio_state.is_device_idle.load(Ordering::SeqCst) {
+            let idle_for = share_audio_state.last_output_time.lock().unwrap().elapsed();
+            if idle_for > MAX_OUTPUT_IDLE {
+                if let Err(e) = codec.lock().unwrap().enable_output(false) {
+                    warn!("disable output failed: {:?}", e);
+                } else {
+                    info!("audio output idle for {:?}, output disabled", idle_for);
+                }
+            }
+        }
         return false;
     }
 

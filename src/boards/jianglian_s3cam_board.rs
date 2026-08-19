@@ -9,7 +9,10 @@ use esp_idf_hal::{
     gpio::AnyInputPin,
     i2c::{I2cConfig, I2cDriver},
     i2s::{
-        config::{DataBitWidth, StdConfig},
+        config::{
+            Config, DataBitWidth, SlotMode, StdClkConfig, StdConfig, StdGpioConfig,
+            StdSlotConfig,
+        },
         I2sBiDir, I2sDriver,
     },
     ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
@@ -125,7 +128,19 @@ impl JiangLianS3CamBoard {
 
         // 初始化I2S
         // let tdm_config = TdmConfig::default();
-        let std_config = StdConfig::philips(16000, DataBitWidth::Bits16);
+        // 注意 1：DMA 描述符数量不能动（dma_buffer_count(16) 实测导致拾音失效），
+        // 播放卡顿用软件 jitter buffer 解决（见 application.rs）。
+        // 注意 2：auto_clear(true) 必须保留——TX DMA underrun 时自动发静音；
+        // 为 false 时 DMA 会循环重发最后一个缓冲的残留音频（~32ms 片段），
+        // 网络抖动导致的短暂断流会变成"嗒嗒嗒"重复声/爆音。
+        // 组装方式 = philips() 的等价展开（esp-idf-hal 0.46.x StdConfig 字段私有），
+        // 仅 channel Config 加 auto_clear(true)，DMA 深度保持默认 6。
+        let std_config = StdConfig::new(
+            Config::default().auto_clear(true),
+            StdClkConfig::from_sample_rate_hz(16000),
+            StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
+            StdGpioConfig::default(),
+        );
 
         let bclk = pins.gpio42;
         let din = pins.gpio45;

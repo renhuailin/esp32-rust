@@ -19,7 +19,7 @@ use std::{
     ffi::{c_void, CStr, CString},
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
         mpsc::{self, channel, Receiver, Sender, SyncSender},
         Arc, Mutex, MutexGuard,
     },
@@ -69,6 +69,18 @@ use esp_idf_svc::{
 // 使用VecDeque作为缓冲区，因为它在头部移除元素时效率很高
 pub type AudioBuffer = VecDeque<u8>;
 
+/// 软件 jitter buffer 起播水位：240ms 音频 @16kHz/stereo/16bit（64KB/s）。
+/// 攒够此数量才开始播放，用于吸收网络到包抖动与消费节奏间隙（消除衔接卡顿）。
+const JITTER_TARGET_BYTES: usize = 15360;
+
+/// 播放链路稳态库存高水位：300ms @16kHz/stereo/16bit（64KB/s）。
+/// audio_loop 送包前检查"已送出未播完"水位（pcm_sent - pcm_played），
+/// 超限则本轮暂停送包、剩余包放回解码队列（削峰）。channel 的 25 包
+/// 容量仅作突发兜底，稳态库存收敛于此水位 —— tts stop 排空尾长 ≈
+/// 稳态库存 + DMA 残留，削峰后 Speaking→Listening 切换从最深 ~1.5s
+/// 恢复到 ~0.4s，且不损失抗抖动能力。
+const PLAYBACK_BACKLOG_LIMIT_BYTES: usize = 19200;
+
 // 共享状态结构体,主要用于音频测试模式保存PCM数据。
 pub struct SharedAudioState {
     pub buffer: Mutex<AudioBuffer>,
@@ -79,6 +91,22 @@ pub struct SharedAudioState {
     audio_decode_queue: Mutex<VecDeque<AudioStreamPacket>>, //待解码的音频队列
     busy_decoding_audio: AtomicBool, //正在解码音频,TODO:: 在c++代码中，如果正在解码音频，则不播放音频
     abort_speaking: AtomicBool,      //是否中断speaking
+
+    // ── 软件 jitter buffer（替代 DMA 加深方案，DMA 深度改动会导致拾音失效）──
+    /// 解码后、送入播放 channel 前的攒包缓冲
+    pub jitter_buffer: Mutex<VecDeque<Vec<u8>>>,
+    /// false = 新一轮 TTS 还在攒包阶段（未达到起播水位）
+    pub jitter_primed: AtomicBool,
+    /// audio_loop 已 send 到播放 channel 的 PCM 字节数
+    /// （Xtensa 无 AtomicU64，32 位计数约 18 小时连续播放回绕一次，
+    /// 相等判断仅在 tts stop 排空时短暂使用，回绕窗口误判概率可忽略）
+    pub pcm_sent_bytes: AtomicUsize,
+    /// pcm_player_thread 已实际写完 I2S 的 PCM 字节数
+    pub pcm_played_bytes: AtomicUsize,
+    /// 播放代数：abort_speaking 时 +1，channel 中旧代数的包直接丢弃，
+    /// 防止打断后 channel 库存里的旧音频继续播出（最多 25 包/1.5s）。
+    /// 旧代数的包仍计数 played，保持 sent/played 水位配对。
+    pub play_epoch: AtomicUsize,
 }
 
 impl SharedAudioState {
@@ -93,6 +121,11 @@ impl SharedAudioState {
             audio_decode_queue,
             busy_decoding_audio: false.into(),
             abort_speaking: false.into(),
+            jitter_buffer: Mutex::new(VecDeque::new()),
+            jitter_primed: true.into(),
+            pcm_sent_bytes: 0.into(),
+            pcm_played_bytes: 0.into(),
+            play_epoch: 0.into(),
         }
     }
 }
@@ -296,9 +329,9 @@ pub struct Application {
     inner_sender: Sender<AppEvent>,
     inner_receiver: Receiver<AppEvent>,
 
-    //用于播放pcm的channel
-    inner_pcm_tx: SyncSender<Vec<u8>>,
-    inner_pcm_rx: Option<Receiver<Vec<u8>>>,
+    //用于播放pcm的channel（(epoch, pcm)：epoch 为播放代数，abort 后旧代数包被丢弃）
+    inner_pcm_tx: SyncSender<(usize, Vec<u8>)>,
+    inner_pcm_rx: Option<Receiver<(usize, Vec<u8>)>>,
 
     aec_mode: AecMode,
     listening_mode: ListeningMode,
@@ -431,8 +464,11 @@ impl Application {
             .unwrap(),
         ));
 
-        // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长
-        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(10);
+        // 使用 sync_channel 创建一个带缓冲的 channel，防止内存无限制增长。
+        // 容量 25 包 ≈ 1500ms 库存：网络抖动（实测 >700ms 的抖动会让 DMA 见底
+        // 触发 underrun）被 channel 库存吸收，配合 auto_clear 保底。
+        // 传输 (epoch, pcm)：epoch 为播放代数，abort 打断后旧代数包被丢弃。
+        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<(usize, Vec<u8>)>(25);
         // ── 唤醒诊断开关 ─────────────────────────────────────────────────────
         // 背景：ES7210 std（非TDM）模式下 I2S 两个槽位 = MIC1 + MIC2。
         // 若 ch1 实为第二个麦克风而非播放回采参考，AFE 以 "MR" 格式把 MIC2
@@ -718,6 +754,7 @@ impl Application {
         let codec_for_opus_player = Arc::clone(&codec_arc);
 
         let pcm_player_codec = Arc::clone(&codec_for_opus_player);
+        let pcm_player_audio_state = Arc::clone(&self.shared_audio_state);
 
         //启动音频输出子线程
         info!("启动音频输出线程 start pcm_player_thread ...");
@@ -738,12 +775,25 @@ impl Application {
 
             let _ = thread::spawn(move || {
                 // let mut opus_decoder = ...;
-                for pcm_packet in pcm_rx {
-                    pcm_player_codec
-                        .lock()
-                        .unwrap()
-                        .output_data(&pcm_packet)
-                        .unwrap();
+                for (epoch, pcm_packet) in pcm_rx {
+                    // 播放代数：abort 打断后旧代数的包直接丢弃（不写 I2S），
+                    // 防止打断后 channel 库存里的旧音频继续播出。
+                    // 仍要计数 played，保持 sent/played 水位配对。
+                    let cur_epoch =
+                        pcm_player_audio_state.play_epoch.load(Ordering::SeqCst);
+                    if epoch == cur_epoch {
+                        pcm_player_codec
+                            .lock()
+                            .unwrap()
+                            .output_data(&pcm_packet)
+                            .unwrap();
+                    }
+                    // 播放水位：包已写完 I2S（或作为旧代数被丢弃），
+                    // 与 pcm_sent_bytes 的差值即"已送出未播完"的量
+                    // （tts stop 排空判断依据）
+                    pcm_player_audio_state
+                        .pcm_played_bytes
+                        .fetch_add(pcm_packet.len(), Ordering::SeqCst);
                 }
             });
             ThreadSpawnConfiguration::default().set().unwrap();
@@ -1052,6 +1102,22 @@ impl Application {
                                                     self.shared_audio_state
                                                         .abort_speaking
                                                         .store(false, Ordering::SeqCst);
+                                                    // 新一轮 TTS：重置 jitter buffer，重新攒包起播
+                                                    self.shared_audio_state
+                                                        .jitter_buffer
+                                                        .lock()
+                                                        .unwrap()
+                                                        .clear();
+                                                    self.shared_audio_state
+                                                        .jitter_primed
+                                                        .store(false, Ordering::SeqCst);
+                                                    // 冲刷 DMA 残留：jitter 攒包期间 pcm_player
+                                                    // 无数据可写，TX DMA 空转。若上轮是打断场景
+                                                    // （abort 不经过 play_silence），DMA 里残留的是
+                                                    // 旧音乐片段，不冲掉会在新音频起播前被重发
+                                                    // （auto_clear=false 时）或以杂音形式泄漏
+                                                    // （新旧行为都有拼接风险）。
+                                                    self.play_silence();
                                                     info!(
                                                         "处理文本消息开始: {} 当前状态: {:?}",
                                                         text, self.state
@@ -1074,7 +1140,8 @@ impl Application {
                                                     // audio_decode_queue 里通常还积压着未解码的尾段包。
                                                     // 之前的做法是直接 clear() —— 尾段整个被扔掉，
                                                     // 表现为"话没说完就进 Listening"。正确做法：等 audio_loop
-                                                    // 线程把队列消费完（队列为空且不在解码中），限时保护防卡死。
+                                                    // 线程把队列消费完且实际播完（jitter 清空、send/played
+                                                    // 水位追平），限时保护防卡死。
                                                     {
                                                         let deadline = std::time::Instant::now()
                                                             + Duration::from_millis(3000);
@@ -1089,7 +1156,30 @@ impl Application {
                                                                 .shared_audio_state
                                                                 .busy_decoding_audio
                                                                 .load(Ordering::SeqCst);
-                                                            if queue_empty && idle {
+                                                            // jitter buffer 未送出的包不算排空
+                                                            let jitter_empty = self
+                                                                .shared_audio_state
+                                                                .jitter_buffer
+                                                                .lock()
+                                                                .unwrap()
+                                                                .is_empty();
+                                                            // 播放水位：send 的 PCM 必须全部写完 I2S。
+                                                            // 用 >= 而非 ==：played 超前于 sent 也视为
+                                                            // "已送出的全部消费完"，防御任何未配对的
+                                                            // 发送路径（如音效播放）导致排空永不收敛
+                                                            let played_up = self
+                                                                .shared_audio_state
+                                                                .pcm_sent_bytes
+                                                                .load(Ordering::SeqCst)
+                                                                <= self
+                                                                    .shared_audio_state
+                                                                    .pcm_played_bytes
+                                                                    .load(Ordering::SeqCst);
+                                                            if queue_empty
+                                                                && idle
+                                                                && jitter_empty
+                                                                && played_up
+                                                            {
                                                                 break;
                                                             }
                                                             if std::time::Instant::now() >= deadline
@@ -1099,6 +1189,11 @@ impl Application {
                                                                 );
                                                                 self.shared_audio_state
                                                                     .audio_decode_queue
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .clear();
+                                                                self.shared_audio_state
+                                                                    .jitter_buffer
                                                                     .lock()
                                                                     .unwrap()
                                                                     .clear();
@@ -1676,6 +1771,7 @@ impl Application {
                     // };
 
                     let pcm_sender = self.inner_pcm_tx.clone();
+                    let play_epoch = self.shared_audio_state.play_epoch.load(Ordering::SeqCst);
 
                     // match pcm_sender.send(vec_pcm_data) {
                     //     Ok(_) => {}
@@ -1686,8 +1782,18 @@ impl Application {
 
                     // // 3. 使用 .chunks() 方法将整个PCM数据切分成多个小块
                     for chunk in pcm_stereo_bytes.chunks(CHUNK_SIZE) {
-                        match pcm_sender.send(chunk.to_vec()) {
-                            Ok(_) => {}
+                        match pcm_sender.send((play_epoch, chunk.to_vec())) {
+                            Ok(_) => {
+                                // 播放水位配对：pcm_player 收到包必累加
+                                // pcm_played_bytes（无论播放还是按代数丢弃），
+                                // 发送侧必须同步累加 pcm_sent_bytes，
+                                // 否则 tts stop 的 sent == played 排空
+                                // 条件永远不成立（开机 success.p3 一播，
+                                // 之后每次 tts stop 都打满 3s 超时）
+                                self.shared_audio_state
+                                    .pcm_sent_bytes
+                                    .fetch_add(chunk.len(), Ordering::SeqCst);
+                            }
                             Err(err) => {
                                 error!("Failed to send pcm data: {:?}", err);
                             }
@@ -1706,6 +1812,20 @@ impl Application {
         self.shared_audio_state
             .abort_speaking
             .store(true, Ordering::SeqCst);
+        // 打断播放：jitter buffer 里的积压包一并丢弃，避免 abort 后又被播出
+        self.shared_audio_state
+            .jitter_buffer
+            .lock()
+            .unwrap()
+            .clear();
+        self.shared_audio_state
+            .jitter_primed
+            .store(true, Ordering::SeqCst);
+        // 播放代数 +1：channel 库存里的旧包（最多 25 包/1.5s）由
+        // pcm_player 按 epoch 丢弃，不再播出
+        self.shared_audio_state
+            .play_epoch
+            .fetch_add(1, Ordering::SeqCst);
 
         if let Err(err) = self.protocol.send_abort_speaking(reason) {
             error!("Failed to send abort speaking: {:?}", err);
@@ -1751,7 +1871,7 @@ fn audio_loop(
     audio_codec: Arc<Mutex<dyn AudioCodec>>,
     audio_processor: Arc<Mutex<dyn AudioProcessor>>,
     share_audio_state: Arc<SharedAudioState>,
-    inner_pcm_tx: SyncSender<Vec<u8>>,
+    inner_pcm_tx: SyncSender<(usize, Vec<u8>)>,
     wake_word_service: Arc<Mutex<Option<WakeWordService>>>,
 ) {
     // let mut codec = audio_codec.lock().unwrap();
@@ -1786,20 +1906,25 @@ fn audio_loop(
 
     // let mut cache_packet_count: i32 = 0;
 
+    // wake 喂料残留缓冲（部分读取的数据凑满一个 feed 块再喂 AFE）
+    let mut wake_residual: Vec<i16> = Vec::new();
+
     loop {
         let pcm_tx = inner_pcm_tx.clone();
         let audio_state = share_audio_state.clone();
-        start_audio_input(
+        let input_worked = start_audio_input(
             Arc::clone(&audio_codec),
             audio_processor_arc.clone(),
             &wake_word_service,
             &mut read_buffer,
             &mut wake_read_buffer,
+            &mut wake_residual,
         );
 
+        let mut output_worked = false;
         let codec_arc = Arc::clone(&audio_codec);
         if codec_arc.lock().unwrap().output_enabled() {
-            start_audio_output(
+            output_worked = start_audio_output(
                 // codec_arc,
                 // audio_processor_arc.clone(),
                 audio_state,
@@ -1813,7 +1938,14 @@ fn audio_loop(
             info!("application: output_enabled: false");
         }
 
-        // thread::sleep(Duration::from_millis(10));
+        // 节拍原则：任何阻塞式音频工作发生时，其阻塞时长本身就是节拍器
+        // （codec read 等 DMA 积累 / pcm send 背压），绝不能再叠加 sleep——
+        // 否则喂入率 < 消耗速率，AFE/DMA ring 欠喂耗尽（唤醒失灵、
+        // "Ringbuffer of AFE is empty"、播放 underrun 卡顿的统一根源）。
+        // 仅完全空闲（无输入读取、无播放数据处理）时短休眠轮询。
+        if !input_worked && !output_worked {
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -1824,14 +1956,15 @@ fn start_audio_output(
     opus_decoder: &mut OpusAudioDecoder,
     decode_buffer: &mut Vec<i16>,
     // pcm_buffer: &mut Vec<u8>,
-    pcm_sender: SyncSender<Vec<u8>>,
-) {
-    // info!("application: start_audio_output");
+    pcm_sender: SyncSender<(usize, Vec<u8>)>,
+) -> bool {
+    // 返回值：本轮是否处理了音频数据（解码/送播）。
+    // audio_loop 依此决定是否休眠（播放中 send 背压即节拍器，无需额外 sleep）。
 
     // If app is busy decoding audio, return
     if share_audio_state.busy_decoding_audio.load(Ordering::SeqCst) {
         // info!("application: busy_decoding_audio: true");
-        return;
+        return false;
     }
 
     if share_audio_state
@@ -1841,7 +1974,7 @@ fn start_audio_output(
         .is_empty()
     {
         // info!("application: audio_decode_queue is empty");
-        return;
+        return false;
     }
 
     // let packet = share_audio_state
@@ -1850,16 +1983,31 @@ fn start_audio_output(
     //     .unwrap()
     //     .pop_front();
 
-    let packets = {
+    let mut packets = {
         let mut queue = share_audio_state.audio_decode_queue.lock().unwrap();
         // std::mem::take 会把 queue 换成默认值（空），并把原来的值返回
         // 这完全等同于 C++ 的 std::move
         std::mem::take(&mut *queue)
     };
-    for packet in packets {
+    let mut did_work = false;
+    while let Some(packet) = packets.pop_front() {
         if share_audio_state.abort_speaking.load(Ordering::SeqCst) {
             info!("application: abort_speaking: true");
-            return;
+            // 打断：丢弃剩余所有包（含本包），与原行为一致
+            return did_work;
+        }
+
+        // 稳态库存削峰：已送出未播完的水位超限时本轮暂停送包，
+        // 剩余包放回解码队列，等 pcm_player 播放消费把水位降下来后
+        // 下一轮再送。注意：不 sleep，仅让出本轮输出处理，
+        // 不影响本线程的拾音喂料节拍。
+        let backlog = share_audio_state
+            .pcm_sent_bytes
+            .load(Ordering::SeqCst)
+            .saturating_sub(share_audio_state.pcm_played_bytes.load(Ordering::SeqCst));
+        if backlog >= PLAYBACK_BACKLOG_LIMIT_BYTES {
+            packets.push_front(packet);
+            break;
         }
 
         // if let Some(packet) = packet {
@@ -1874,14 +2022,64 @@ fn start_audio_output(
             decode_buffer,
         ) {
             Ok(pcm_data) => {
-                match pcm_sender.send(pcm_data) {
-                    Ok(_) => {
-                        // info!("Send pcm data success.");
+                // 软件 jitter buffer：新一轮 TTS 先攒包再起播。
+                // DMA 深度改动（dma_buffer_count 调大）实测会导致拾音失效，
+                // 改用本软件方案吸收网络到包抖动与消费节奏间隙：
+                // 攒够 JITTER_TARGET_BYTES（240ms @64KB/s）才开始向播放
+                // channel 送数，期间网络抖动被缓冲吸收，消除衔接卡顿。
+                // tts start 时主循环会重置 jitter_primed=false 并清空缓冲。
+                let primed = share_audio_state.jitter_primed.load(Ordering::SeqCst);
+                if !primed {
+                    let mut jb = share_audio_state.jitter_buffer.lock().unwrap();
+                    jb.push_back(pcm_data);
+                    let total: usize = jb.iter().map(|v| v.len()).sum();
+                    if total >= JITTER_TARGET_BYTES {
+                        drop(jb);
+                        share_audio_state.jitter_primed.store(true, Ordering::SeqCst);
                     }
-                    Err(e) => {
-                        error!("Send decoded opus data(pcm data) error: {:?}", e);
+                } else {
+                    let pcm_len = pcm_data.len();
+                    let epoch = share_audio_state.play_epoch.load(Ordering::SeqCst);
+                    match pcm_sender.send((epoch, pcm_data)) {
+                        Ok(_) => {
+                            share_audio_state
+                                .pcm_sent_bytes
+                                .fetch_add(pcm_len, Ordering::SeqCst);
+                        }
+                        Err(e) => {
+                            error!("Send decoded opus data(pcm data) error: {:?}", e);
+                        }
                     }
                 }
+                // 已 primed（含刚达标）：把攒下的包全部送出
+                if share_audio_state.jitter_primed.load(Ordering::SeqCst) {
+                    loop {
+                        let front = share_audio_state
+                            .jitter_buffer
+                            .lock()
+                            .unwrap()
+                            .pop_front();
+                        match front {
+                            Some(pcm) => {
+                                let pcm_len = pcm.len();
+                                let epoch = share_audio_state.play_epoch.load(Ordering::SeqCst);
+                                match pcm_sender.send((epoch, pcm)) {
+                                    Ok(_) => {
+                                        share_audio_state.pcm_sent_bytes.fetch_add(
+                                            pcm_len,
+                                            Ordering::SeqCst,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Send jitter pcm data error: {:?}", e);
+                                    }
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                }
+                did_work = true;
             }
             Err(e) => {
                 error!("Failed to decode audio: {}", e);
@@ -1891,6 +2089,14 @@ fn start_audio_output(
             .busy_decoding_audio
             .store(false, Ordering::SeqCst);
     }
+    // 未消费的包（削峰触发）按原顺序放回队头，不丢弃
+    if !packets.is_empty() {
+        let mut queue = share_audio_state.audio_decode_queue.lock().unwrap();
+        while let Some(p) = packets.pop_back() {
+            queue.push_front(p);
+        }
+    }
+    did_work
 }
 
 fn start_audio_input(
@@ -1899,23 +2105,13 @@ fn start_audio_input(
     wake_word_service: &Arc<Mutex<Option<WakeWordService>>>,
     mut read_buffer: &mut Vec<u8>,
     mut wake_read_buffer: &mut Vec<u8>,
-) {
-    // 对齐 C++ OnAudioInput：喂料路径上不做任何 sleep，全速读取，
-    // 仅当 wake 与 processor 都未运行时（函数末尾）才 delay 半帧。
-    // 前导 sleep 会导致消费速率低于生产速率，DMA 积压溢出、音频断续。
-    // if (audio_processor_->IsRunning())
-    // {
-    //     std::vector<int16_t> data;
-    //     int samples = audio_processor_->GetFeedSize();
-    //     if (samples > 0)
-    //     {
-    //         if (ReadAudio(data, 16000, samples))
-    //         {
-    //             audio_processor_->Feed(data);
-    //             return;
-    //         }
-    //     }
-    // }
+    residual_buffer: &mut Vec<i16>,
+) -> bool {
+    // 返回值：本轮是否发生了阻塞式音频工作（read 等）。
+    // audio_loop 依此决定是否休眠：有阻塞工作 → read 的阻塞本身就是节拍器，
+    // 不再额外 sleep（否则喂入率 <100%，AFE/DMA ring 欠喂耗尽，
+    // 表现为唤醒失灵 / "Ringbuffer of AFE is empty"）；
+    // 完全空闲 → 主循环 5ms 轮询休眠。
 
     // if audio_processor.lock().unwrap().is_running() {
     //     let samples = audio_processor.lock().unwrap().get_feed_size();
@@ -1985,6 +2181,8 @@ fn start_audio_input(
                 0
             }
         };
+        // read 调用即阻塞节拍（等 DMA 积累），无论读到多少都算"有工作"
+        let mut did_blocking_work = true;
 
         if bytes_read > 0 {
             match bytes_to_i16_slice(&wake_read_buffer[..bytes_read]) {
@@ -2033,18 +2231,18 @@ fn start_audio_input(
                     } else {
                         samples
                     };
-                    if feed_slice.len() >= wake_feed_size {
+                    // 残留缓冲：i2s read 可能返回部分数据（不足一次 feed 量），
+                    // 旧实现直接整块丢弃（触发 AFE 欠喂）。这里先积累，
+                    // 凑满一个 feed 块再喂 AFE，保证不丢采样。
+                    residual_buffer.extend_from_slice(feed_slice);
+                    while residual_buffer.len() >= wake_feed_size {
                         let mut guard = wake_word_service.lock().unwrap();
                         if let Some(service) = guard.as_mut() {
-                            let _ = service.feed(&feed_slice[..wake_feed_size]);
+                            let _ = service.feed(&residual_buffer[..wake_feed_size]);
                         }
-                    } else {
-                        warn!(
-                            "wake feed underflow: got {} samples, need {}",
-                            feed_slice.len(),
-                            wake_feed_size
-                        );
+                        residual_buffer.drain(..wake_feed_size);
                     }
+                    did_blocking_work = true;
                 }
                 Err(_) => {
                     warn!(
@@ -2056,7 +2254,7 @@ fn start_audio_input(
         } else {
             warn!("Wake word codec read returned 0 bytes (input pipeline issue?)");
         }
-        return;
+        return did_blocking_work;
     }
 
     if is_running && feed_size > 0 {
@@ -2146,12 +2344,12 @@ fn start_audio_input(
             info!("bytes_read is 0, 不进行feed");
         }
 
-        return;
+        return true;
     }
 
-    // 对齐 C++ OnAudioInput 末尾的 vTaskDelay(OPUS_FRAME_DURATION_MS / 2)：
-    // 仅在 wake 检测与音频处理器都未运行（空闲）时才休眠半帧
-    thread::sleep(Duration::from_millis((OPUS_FRAME_DURATION_MS / 2) as u64));
+    // wake 与 processor 都未运行：本轮无音频输入工作，返回 false
+    // 让主循环进入短休眠（空闲节流）。
+    false
 }
 
 fn decode_opus_audio1(
@@ -2373,7 +2571,7 @@ fn play_opus_audio(
 
 fn run_audio_decode_task(
     xz_event_rx: Receiver<AppEvent>,
-    pcm_sender: SyncSender<Vec<u8>>,
+    pcm_sender: SyncSender<(usize, Vec<u8>)>,
     // codec: Arc<Mutex<dyn AudioCodec + 'static>>,
 ) {
     let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
@@ -2411,7 +2609,7 @@ fn run_audio_decode_task(
                                     cached_packet_count = 0;
                                 }
                                 let cached_pcm = pcm_buffer.clone();
-                                match pcm_sender.send(cached_pcm) {
+                                match pcm_sender.send((0, cached_pcm)) {
                                     Ok(_) => {
                                         pcm_buffer.clear();
                                         // info!("Send pcm data success.");
@@ -2429,7 +2627,7 @@ fn run_audio_decode_task(
                     AppEvent::TTSStop => {
                         //把缓存里剩下的的PCM数据发送出去
                         let cached_pcm = pcm_buffer.clone();
-                        match pcm_sender.send(cached_pcm) {
+                        match pcm_sender.send((0, cached_pcm)) {
                             Ok(_) => {
                                 cached_packet_count = 0;
                                 // tts_start = true;

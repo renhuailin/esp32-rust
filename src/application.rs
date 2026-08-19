@@ -779,8 +779,7 @@ impl Application {
                     // 播放代数：abort 打断后旧代数的包直接丢弃（不写 I2S），
                     // 防止打断后 channel 库存里的旧音频继续播出。
                     // 仍要计数 played，保持 sent/played 水位配对。
-                    let cur_epoch =
-                        pcm_player_audio_state.play_epoch.load(Ordering::SeqCst);
+                    let cur_epoch = pcm_player_audio_state.play_epoch.load(Ordering::SeqCst);
                     if epoch == cur_epoch {
                         pcm_player_codec
                             .lock()
@@ -1896,7 +1895,7 @@ fn audio_loop(
     // let mut pcm_buffer: Vec<u8> = Vec::with_capacity(38400);
 
     let sample_rate = AUDIO_INPUT_SAMPLE_RATE as i32; //# 采样率固定为16000Hz
-    let channels = 2; //# 单声道
+    let channels = 2; //# 双声道
     let mut opus_decoder = OpusAudioDecoder::new(
         sample_rate,
         channels,
@@ -2035,7 +2034,9 @@ fn start_audio_output(
                     let total: usize = jb.iter().map(|v| v.len()).sum();
                     if total >= JITTER_TARGET_BYTES {
                         drop(jb);
-                        share_audio_state.jitter_primed.store(true, Ordering::SeqCst);
+                        share_audio_state
+                            .jitter_primed
+                            .store(true, Ordering::SeqCst);
                     }
                 } else {
                     let pcm_len = pcm_data.len();
@@ -2054,21 +2055,16 @@ fn start_audio_output(
                 // 已 primed（含刚达标）：把攒下的包全部送出
                 if share_audio_state.jitter_primed.load(Ordering::SeqCst) {
                     loop {
-                        let front = share_audio_state
-                            .jitter_buffer
-                            .lock()
-                            .unwrap()
-                            .pop_front();
+                        let front = share_audio_state.jitter_buffer.lock().unwrap().pop_front();
                         match front {
                             Some(pcm) => {
                                 let pcm_len = pcm.len();
                                 let epoch = share_audio_state.play_epoch.load(Ordering::SeqCst);
                                 match pcm_sender.send((epoch, pcm)) {
                                     Ok(_) => {
-                                        share_audio_state.pcm_sent_bytes.fetch_add(
-                                            pcm_len,
-                                            Ordering::SeqCst,
-                                        );
+                                        share_audio_state
+                                            .pcm_sent_bytes
+                                            .fetch_add(pcm_len, Ordering::SeqCst);
                                     }
                                     Err(e) => {
                                         error!("Send jitter pcm data error: {:?}", e);

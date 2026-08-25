@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -185,6 +185,13 @@ impl Protocol for WebSocketProtocol {
 
         let config = EspWebSocketClientConfig {
             headers: Some(header.as_str()),
+            // 关闭后台自动重连：连接失败时 IDF 默认会每 10s 无限重试，
+            // client drop（esp_websocket_client_destroy）要等重连定时器
+            // 到期才能停任务，曾把 open_audio_channel 的失败路径拖住 15s。
+            // 失败重连交给应用层（下次唤醒重新 open）。
+            disable_auto_reconnect: true,
+            // 单次连接尝试上限（IDF 默认 10s），不可达地址时更快失败
+            network_timeout_ms: Duration::from_secs(5),
             ..Default::default()
         };
 
@@ -236,6 +243,9 @@ impl Protocol for WebSocketProtocol {
                                 info!("Ignore stale websocket Disconnected event");
                                 return;
                             }
+                            // 通知 open_audio_channel 的等待循环立即感知失败
+                            // （如服务器未启动），否则它会永远阻塞在 recv() 上
+                            let _ = inner_sender.send(AppEvent::WebSocketClosed);
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
@@ -245,6 +255,7 @@ impl Protocol for WebSocketProtocol {
                                 return;
                             }
                             info!("Websocket close, reason: {reason:?}");
+                            let _ = inner_sender.send(AppEvent::WebSocketClosed);
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                         }
 
@@ -253,6 +264,7 @@ impl Protocol for WebSocketProtocol {
                                 info!("Ignore stale websocket Closed event");
                                 return;
                             }
+                            let _ = inner_sender.send(AppEvent::WebSocketClosed);
                             external_sender.send(AppEvent::WebSocketClosed).unwrap();
                             info!("Websocket closed");
                         }
@@ -329,17 +341,25 @@ impl Protocol for WebSocketProtocol {
         // let receiver = inner_receiver;
 
         // if let Some(rx) = receiver {
+        // 等待 server hello 的总超时：连接超时(timeout) + 重连/握手余量。
+        // 没有 || 等待逻辑时（服务器未启动、网络不通、服务器不回 hello），
+        // recv() 会永久阻塞，主事件循环卡死在 Connecting 状态
+        let hello_deadline = Instant::now() + timeout + Duration::from_secs(5);
         loop {
             info!("WebSocketProtocol: Waiting for server hello message...");
-            match inner_receiver.recv() {
+            let remaining = hello_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                error!("Timeout waiting for server hello message");
+                self.close_audio_channel()?;
+                return Err(Error::msg("timeout waiting for server hello"));
+            }
+            match inner_receiver.recv_timeout(remaining) {
                 Ok(event) => {
                     match event {
                         AppEvent::WebSocketConnected => {
                             info!("WebSocketConnected,try to send hello message");
                             // send client hello message
                             if let Some(client) = &mut self.client {
-                                // if client.is_connected() {
-                                // send client hello message
                                 let hello_message = ClientHelloMessage::new().unwrap();
                                 debug!("WebSocketProtocol: Sending hello message...");
                                 match client.send(FrameType::Text(false), hello_message.as_bytes())
@@ -351,25 +371,34 @@ impl Protocol for WebSocketProtocol {
                                         error!("WebSocketProtocol: Send error: {:?}", e)
                                     }
                                 }
-                                // } else {
-                                //     error!(
-                                //         "WebSocketProtocol: Client not connected, cannot send."
-                                //     );
-                                // }
                             }
-                            // break;
                         }
                         AppEvent::ServerHelloMessageReceived(_) => {
-                            // info!("WebSocketProtocol: Server hello message received. {}", text);
-                            // self.parse_server_hello_message(text);
                             self.is_connected = true;
                             break;
                         }
-                        _ => todo!(),
+                        // 连接失败（如服务器未启动）：后台 auto-reconnect 还会重试，
+                        // 但这里立即放弃并清理，让调用方恢复 Idle，下次唤醒再试
+                        AppEvent::WebSocketClosed => {
+                            error!("WebSocket disconnected before server hello");
+                            self.close_audio_channel()?;
+                            return Err(Error::msg(
+                                "websocket disconnected before server hello",
+                            ));
+                        }
+                        _ => {}
                     }
                 }
-                Err(e) => {
-                    error!("websocket error: {:?}", e);
+                Err(RecvTimeoutError::Timeout) => {
+                    error!("Timeout waiting for server hello message");
+                    self.close_audio_channel()?;
+                    return Err(Error::msg("timeout waiting for server hello"));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // inner channel 意外关闭（闭包/client 已被销毁）
+                    error!("Inner websocket event channel closed unexpectedly");
+                    self.close_audio_channel()?;
+                    return Err(Error::msg("inner channel closed before server hello"));
                 }
             }
         }
@@ -386,11 +415,11 @@ impl Protocol for WebSocketProtocol {
     fn close_audio_channel(&mut self) -> Result<(), Error> {
         // 递增连接世代：使旧连接销毁过程中迟到的断开事件全部失效
         self.conn_epoch.fetch_add(1, Ordering::SeqCst);
-        if self.is_connected {
-            if let Some(_) = self.client.take() {
-                //这里不用写任何代码，take获取了所有权，在本作用域结束时，会自动删除。
-            }
-        }
+        // 无条件销毁 client：不仅已连接的要关，连接中途/失败的也要清理。
+        // esp-idf-svc 的 websocket 默认开启 auto-reconnect，失败后会在后台
+        // 无限重试并不断往事件队列灌 Disconnected，必须 take 掉才会停止。
+        // （take 获取所有权，本作用域结束时自动销毁 websocket 任务）
+        let _ = self.client.take();
 
         self.is_connected = false;
         *self.last_incoming_time.lock().unwrap() = None;

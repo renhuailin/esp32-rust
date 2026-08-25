@@ -1588,7 +1588,13 @@ impl Application {
 
                 if !self.audio_processor.lock().unwrap().is_running() {
                     if !self.protocol.is_connected() {
-                        self.protocol.open_audio_channel().unwrap();
+                        // open_audio_channel 现在可能返回 Err（服务器未启动/超时），
+                        // 不能 unwrap：失败则回 Idle，避免 panic 且等待下次唤醒重试
+                        if self.protocol.open_audio_channel().is_err() {
+                            error!("Failed to open audio channel in Listening state");
+                            self.set_device_state(DeviceState::Idle);
+                            return;
+                        }
 
                         // self.wait_for_audio_channel_opened();
                     }
@@ -2079,8 +2085,12 @@ fn audio_loop(
         // 否则喂入率 < 消耗速率，AFE/DMA ring 欠喂耗尽（唤醒失灵、
         // "Ringbuffer of AFE is empty"、播放 underrun 卡顿的统一根源）。
         // 仅完全空闲（无输入读取、无播放数据处理）时短休眠轮询。
+        // 注意：时长不能低于 1 个 FreeRTOS tick（本项目 HZ=100，tick=10ms）。
+        // ESP-IDF 的 usleep 对不足 1 tick 的时长走 ets_delay_us 忙等，
+        // 不让出 CPU → IDLE 任务饿死 → task watchdog 触发
+        // （唤醒后连不上服务器时 input/output 双空闲即复现）。
         if !input_worked && !output_worked {
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }

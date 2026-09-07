@@ -71,6 +71,8 @@ where
     /// on-chip buffer for a presence of default values.
     pub fn init(&mut self) -> OperationResult<E> {
         self.write_u8(0x12, 0b00000111).map_err(Error::I2c)?; // REG 12H: 电源输出控制 7保留/6EXTEN关闭/5保留/4 DC-DC2关闭/3 LDO3关闭/2 LDO2开启/1 LDO4开启/0 DC-DC1开启
+                                                              // self.write_u8(0x12, 0b00011111).map_err(Error::I2c)?; // 岳子辉要求的全打开，这个一定不要在正式的主板上使用！！！！
+
         let v: u16 = (3300 - 700) / 25;
         info!("DC-DC1输出电压设置: {:08b}", v);
         self.write_u8(0x26, v as u8).map_err(Error::I2c)?; // REG 26H: DC-DC1输出电压设置 7-6保留/6-0 Bit6-Bit0 3.3V
@@ -94,6 +96,25 @@ where
         self.write_u8(0x41, 0b11111111).map_err(Error::I2c)?; // REG 41H: IRQ使能2
         self.write_u8(0x42, 0b10111011).map_err(Error::I2c)?; // REG 42H: IRQ使能3
         self.write_u8(0x43, 0b11110011).map_err(Error::I2c)?; // REG 42H: IRQ使能4
+
+        // // 打印电压设置
+        // info!(
+        //     "REG 25H: DC-DC2 动态电压调节参数设置: {:08b}",
+        //     self.read_u8(0x25).map_err(Error::I2c)?
+        // );
+        // info!(
+        //     "REG 26H: DC-DC1 输出电压设置: {:08b}",
+        //     self.read_u8(0x26).map_err(Error::I2c)?
+        // );
+        // info!(
+        //     "REG 27H: LDO4 输出电压设置: {:08b}",
+        //     self.read_u8(0x27).map_err(Error::I2c)?
+        // );
+        // info!(
+        //     "REG 28H: LDO2/3 输出电压设置: {:08b}",
+        //     self.read_u8(0x28).map_err(Error::I2c)?
+        // );
+
         Ok(())
     }
 

@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Error, Result};
 
 use crate::{
-    audio::codec::audio_codec::AudioCodec, display::Display, wifi::wifi_driver::WifiStation,
+    audio::codec::audio_codec::AudioCodec, display::{BatteryStatus, Display},
+    wifi::wifi_driver::WifiStation,
 };
-
 // 定义主板的抽象
 pub trait Board {
     // 关联类型：具体的 WiFi 驱动类型，只要它实现了 WifiStation
@@ -38,4 +38,10 @@ pub trait Board {
     // 你还可以加其他的，比如 Display
     // type DisplayDriver: DrawTarget;
     fn get_display(&mut self) -> &mut Self::DisplayDriver;
+
+    /// 读取电池状态（电量/充电/USB 插入），供状态栏定时刷新。
+    /// 无电源管理芯片的实现保持默认（返回默认空状态）。
+    fn read_battery_status(&mut self) -> Result<BatteryStatus> {
+        Ok(BatteryStatus::default())
+    }
 }

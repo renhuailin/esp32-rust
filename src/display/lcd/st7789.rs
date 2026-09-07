@@ -1,11 +1,10 @@
-use crate::{common::qrcode::draw_qrcode, display::Display};
-use anyhow::{Ok, Result};
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-    prelude::*,
-    primitives::{PrimitiveStyleBuilder, Rectangle},
-    text::Text,
+use crate::{
+    common::qrcode::draw_qrcode,
+    display::{BatteryStatus, Display},
+    gui::{chat, status_bar, ChatMessage, GuiState},
 };
+use anyhow::{Ok, Result};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use esp_idf_hal::gpio::*;
 use esp_idf_hal::{
     delay::Delay,
@@ -21,7 +20,6 @@ use mipidsi::{
     options::{ColorInversion, Orientation, Rotation},
     Builder,
 };
-use u8g2_fonts::U8g2TextStyle;
 // 1. 定义具体的硬件类型别名，方便阅读
 
 // type ConcreteRstPin<'a> = PinDriver<'a, InputOutput>;
@@ -39,6 +37,8 @@ pub struct LcdSt7789 {
     ledc_driver: LedcDriver<'static>,
     // 当前背光亮度百分比（0-100），与 LEDC 占空比线性映射
     brightness_percent: i32,
+    /// UI 状态快照（数据与绘制分离，见 crate::gui）
+    gui: GuiState,
 }
 
 const W: i32 = 240;
@@ -146,6 +146,7 @@ impl LcdSt7789 {
             display,
             ledc_driver,
             brightness_percent: 50,
+            gui: GuiState::new(),
         })
     }
 
@@ -255,31 +256,16 @@ impl LcdSt7789 {
 
 impl Display for LcdSt7789 {
     fn set_status(&mut self, status: &str) {
-        let clear_area = Rectangle::new(Point::new(60, 0), Size::new(200, 40));
-        clear_area
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .fill_color(Rgb565::BLACK)
-                    .build(),
-            )
-            .draw(&mut self.display)
-            .unwrap();
-
-        let character_style =
-            U8g2TextStyle::new(u8g2_fonts::fonts::u8g2_font_wqy16_t_gb2312, Rgb565::WHITE);
-
-        let mut text_width = 0;
-        for ch in status.chars() {
-            text_width += if ch.is_ascii() { 8 } else { 16 };
+        self.gui.status = status.to_string();
+        status_bar::draw_status_text(&mut self.display, status);
+        // 内容区同步显示状态大字（配网二维码显示中则跳过）
+        if !self.gui.qrcode_active {
+            chat::draw_centered_state(&mut self.display, status);
         }
-        let x = 60 + (200 - text_width) / 2;
-        let x = x.max(60).min(240) as i32;
-
-        Text::new(status, Point::new(x, 24), character_style)
-            .draw(&mut self.display)
-            .unwrap();
     }
     fn show_qrcode(&mut self, content: &str) {
+        // 进入二维码模式：内容区归配置二维码，后续 set_status 只更新顶栏
+        self.gui.qrcode_active = true;
         let _code = draw_qrcode(
             &mut self.display,
             content,
@@ -291,109 +277,26 @@ impl Display for LcdSt7789 {
     }
 
     fn show_wifi_signal(&mut self, rssi: Option<i8>) {
-        let clear_area = Rectangle::new(Point::new(0, 0), Size::new(60, 40));
-        clear_area
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .fill_color(Rgb565::BLACK)
-                    .build(),
-            )
-            .draw(&mut self.display)
-            .unwrap();
-
-        let bars = match rssi {
-            None => 0,
-            Some(r) if r >= -30 => 4,
-            Some(r) if r >= -50 => 3,
-            Some(r) if r >= -70 => 2,
-            Some(r) if r >= -85 => 1,
-            Some(_) => 0,
-        };
-
-        let bar_w: i32 = 6;
-        let gap: i32 = 2;
-        let base_x: i32 = 5;
-        let base_y: i32 = 24; // 底部对齐在 y=24
-        let max_h: i32 = 16; // 总高 16px（之前是 20，缩为与电池同高）
-
-        for i in 0..4 {
-            let h = (i + 1) * max_h / 4;
-            let x = base_x + i * (bar_w + gap);
-            let y = base_y - h;
-
-            let color = if i < bars {
-                match bars {
-                    1 | 2 => Rgb565::RED,
-                    3 => Rgb565::YELLOW,
-                    _ => Rgb565::GREEN,
-                }
-            } else {
-                Rgb565::new(0x20, 0x20, 0x20)
-            };
-
-            Rectangle::new(Point::new(x, y), Size::new(bar_w as u32, h as u32))
-                .into_styled(PrimitiveStyleBuilder::new().fill_color(color).build())
-                .draw(&mut self.display)
-                .unwrap();
-        }
+        self.gui.wifi_rssi = rssi;
+        status_bar::draw_wifi_signal(&mut self.display, rssi);
     }
 
     fn show_battery_level(&mut self, level: u8) {
-        let clear_area = Rectangle::new(Point::new(260, 0), Size::new(60, 40));
-        clear_area
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .fill_color(Rgb565::BLACK)
-                    .build(),
-            )
-            .draw(&mut self.display)
-            .unwrap();
+        self.gui.battery.level = level;
+        status_bar::draw_battery_level(&mut self.display, level);
+    }
 
-        let level = level.min(100);
+    fn show_battery_status(&mut self, status: &BatteryStatus) {
+        self.gui.battery = *status;
+        status_bar::draw_battery_status(&mut self.display, status);
+    }
 
-        let bat_x = 275;
-        let bat_y = 11; // 从 8 改为 11，使电池底部落在 y=25
-        let bat_w = 30;
-        let bat_h = 14;
-
-        Rectangle::new(Point::new(bat_x, bat_y), Size::new(bat_w, bat_h))
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .stroke_color(Rgb565::WHITE)
-                    .stroke_width(1)
-                    .fill_color(Rgb565::BLACK)
-                    .build(),
-            )
-            .draw(&mut self.display)
-            .unwrap();
-
-        Rectangle::new(Point::new(bat_x + bat_w as i32, bat_y + 4), Size::new(3, 6))
-            .into_styled(
-                PrimitiveStyleBuilder::new()
-                    .fill_color(Rgb565::WHITE)
-                    .build(),
-            )
-            .draw(&mut self.display)
-            .unwrap();
-
-        if level > 0 {
-            let max_fill = (bat_w - 4) as u32;
-            let fill_w = (max_fill * level as u32 / 100).max(1);
-            let fill_color = if level > 60 {
-                Rgb565::GREEN
-            } else if level > 20 {
-                Rgb565::YELLOW
-            } else {
-                Rgb565::RED
-            };
-
-            Rectangle::new(
-                Point::new(bat_x + 2, bat_y + 2),
-                Size::new(fill_w, (bat_h - 4) as u32),
-            )
-            .into_styled(PrimitiveStyleBuilder::new().fill_color(fill_color).build())
-            .draw(&mut self.display)
-            .unwrap();
-        }
+    fn set_chat_message(&mut self, role: &str, text: &str) {
+        self.gui.chat_message = Some(ChatMessage {
+            role: role.to_string(),
+            text: text.to_string(),
+        });
+        self.gui.qrcode_active = false;
+        chat::draw_chat_message(&mut self.display, self.gui.chat_message.as_ref().unwrap());
     }
 }

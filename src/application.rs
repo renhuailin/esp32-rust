@@ -845,8 +845,13 @@ impl Application {
 
         self.audio_alert("success");
 
-        // 初始化显示假电池电量（75%），后续接入真实电池数据后替换
-        self.board.get_display().show_battery_level(75);
+        // 电池状态：启动立即读取一次真实状态（替换原假数据 75%），
+        // 之后由下方定时线程经 RefreshBattery 事件刷新
+        self.refresh_battery_status();
+
+        // WiFi 信号：启动立即读取一次真实 RSSI（未连接则画空格），
+        // 之后由下方定时线程经 RefreshWifiSignal 事件刷新
+        self.refresh_wifi_signal();
 
         // 启动 WiFi 信号强度定时刷新
         let wifi_signal_sender = self.inner_sender.clone();
@@ -861,6 +866,19 @@ impl Application {
                 }
             });
 
+        // 启动电池状态定时刷新（电量/充电/USB，5s 周期）
+        let battery_sender = self.inner_sender.clone();
+        let _ = thread::Builder::new()
+            .name("battery_status".into())
+            .stack_size(4 * 1024)
+            .spawn(move || loop {
+                thread::sleep(Duration::from_secs(5));
+                if let Err(e) = battery_sender.send(AppEvent::RefreshBattery) {
+                    log::error!("Failed to send RefreshBattery: {:?}", e);
+                    break;
+                }
+            });
+
         // 处理内部事件
         self.event_loop()?;
         Ok(())
@@ -870,6 +888,29 @@ impl Application {
     pub fn audio_alert(&mut self, message: &str) {
         self.reset_decoder();
         self.play_p3_audio(message);
+    }
+
+    /// 读取电池状态（电量/充电/放电/USB）并刷新状态栏。
+    /// 在主循环线程调用；I2C 经 shared-bus 互斥，与音频编解码器安全共存。
+    fn refresh_battery_status(&mut self) {
+        match self.board.read_battery_status() {
+            Ok(status) => {
+                self.board.get_display().show_battery_status(&status);
+            }
+            Err(e) => log::warn!("Failed to read battery status: {:?}", e),
+        }
+    }
+
+    /// 读取当前 WiFi RSSI 并刷新状态栏信号格（None = 未连接）。
+    /// 在主循环线程调用；数据来自 esp_wifi_sta_get_ap_info，为真实信号强度。
+    fn refresh_wifi_signal(&mut self) {
+        match self.board.get_wifi_driver().get_rssi() {
+            Ok(rssi) => {
+                log::info!("WiFi RSSI: {:?}", rssi);
+                self.board.get_display().show_wifi_signal(rssi);
+            }
+            Err(e) => log::warn!("Failed to read WiFi RSSI: {:?}", e),
+        }
     }
 
     fn event_loop(&mut self) -> Result<(), Error> {
@@ -1411,9 +1452,11 @@ impl Application {
                         }
 
                         AppEvent::RefreshWifiSignal => {
-                            if let Ok(rssi) = self.board.get_wifi_driver().get_rssi() {
-                                self.board.get_display().show_wifi_signal(rssi);
-                            }
+                            self.refresh_wifi_signal();
+                        }
+
+                        AppEvent::RefreshBattery => {
+                            self.refresh_battery_status();
                         }
 
                         _ => {

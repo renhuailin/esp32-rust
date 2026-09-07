@@ -191,6 +191,46 @@ where
         Ok(reg_val.get_bit(POWER_MODE_CHGSTATUS_IS_CHARGING))
     }
 
+    /// Returns `true` if battery is connected and charge is finished.
+    /// 充电完成条件：不在充电状态且有电池连接（对齐 C++ IsChargingDone）。
+    pub fn is_charge_done(&mut self) -> Axp173Result<bool, E> {
+        let reg_val = self.read_u8(POWER_MODE_CHGSTATUS).map_err(Error::I2c)?;
+
+        Ok(!reg_val.get_bit(POWER_MODE_CHGSTATUS_IS_CHARGING)
+            && reg_val.get_bit(POWER_MODE_CHGSTATUS_BATTERY_PRESENT))
+    }
+
+    /// Returns `true` if battery is currently discharging.
+    /// 放电条件（对齐 C++ IsDischarging）：
+    /// 1. 电流方向为放电（REG00 bit2=0）
+    /// 2. 无可用外部电源（VBUS/ACIN 均不可用）
+    /// 3. 电池在位且未在充电
+    pub fn is_discharging(&mut self) -> Axp173Result<bool, E> {
+        let reg00 = self.read_u8(POWER_STATUS).map_err(Error::I2c)?;
+        let reg01 = self.read_u8(POWER_MODE_CHGSTATUS).map_err(Error::I2c)?;
+
+        let bat_connected = reg01.get_bit(POWER_MODE_CHGSTATUS_BATTERY_PRESENT);
+        let no_external_power = !(reg00.get_bit(POWER_STATUS_VBUS_USABLE)
+            | reg00.get_bit(POWER_STATUS_ACIN_USABLE));
+        let discharging_dir = !reg00.get_bit(POWER_STATUS_BATT_CHARGE_DISCHARGE);
+
+        Ok(bat_connected && no_external_power && discharging_dir)
+    }
+
+    /// Returns battery charge level in percents (0-100), estimated from voltage.
+    /// 电压线性折算（对齐 C++ GetBatteryLevel）：
+    /// < 3.248088 V 视为 0%，否则 (V - 3.120712) * 100，封顶 100。
+    pub fn battery_level(&mut self) -> Axp173Result<u8, E> {
+        let volts = self.batt_voltage()?.as_volts();
+        let pct = if volts < 3.248_088 {
+            0.0
+        } else {
+            (volts - 3.120_712) * 100.0
+        };
+
+        Ok(pct.clamp(0.0, 100.0) as u8)
+    }
+
     /// Enables selected LDO with selected output voltage.
     pub fn enable_ldo(&mut self, ldo: &Ldo) -> OperationResult<E> {
         self.set_ldo_voltage(&ldo)?;

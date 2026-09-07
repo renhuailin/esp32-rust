@@ -28,19 +28,22 @@ use crate::{
     axp173::Axp173,
     boards::board::Board,
     common::{application_context::ApplicationContext, gpio_button::Button},
-    display::{lcd::st7789::LcdSt7789, Display},
+    display::{lcd::st7789::LcdSt7789, BatteryStatus, Display},
     wifi::{
         ssid_manager::SsidMananger,
         wifi_driver::{Esp32WifiDriver, WifiAP, WifiStation},
     },
 };
-use shared_bus::{BusManager, BusManagerStd};
+use shared_bus::{BusManager, BusManagerStd, I2cProxy};
 
 pub struct JiangLianS3CamBoard {
     wifi_driver: Esp32WifiDriver,
     pub display: LcdSt7789,
     audio_codec: Arc<Mutex<dyn AudioCodec + 'static>>,
     bus_manager: &'static BusManager<Mutex<I2cDriver<'static>>>,
+    /// AXP173 电源管理实例（init_power_management 后可用），
+    /// 提供电量/充电/USB 状态读取。
+    power_manager: Option<Axp173<I2cProxy<'static, Mutex<I2cDriver<'static>>>>>,
 
     speak_button: &'static mut Button,
     volume_button: &'static mut Button,
@@ -181,6 +184,7 @@ impl JiangLianS3CamBoard {
             display: display,
             audio_codec: Arc::new(Mutex::new(audio_codec)),
             bus_manager,
+            power_manager: None,
             speak_button: touch_button,
             volume_button,
             on_speak_button_clicked: None,
@@ -238,8 +242,44 @@ impl JiangLianS3CamBoard {
             .set_exten(true)
             .map_err(|e| anyhow::anyhow!("Failed to set EXTEN: {:?}", e))?;
 
+        // 持有实例，供运行期读取电池/充电/USB 状态
+        self.power_manager = Some(axp173);
+
         info!("Init power management done");
         Ok(())
+    }
+
+    /// 从 AXP173 读取电池状态（电量/充电/放电/USB 在位）。
+    /// 供状态栏定时刷新（AppEvent::RefreshBattery -> Display::show_battery_status）。
+    fn read_battery_status_impl(&mut self) -> Result<BatteryStatus> {
+        let pm = self
+            .power_manager
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("AXP173 not initialized"))?;
+
+        let level = pm
+            .battery_level()
+            .map_err(|e| anyhow::anyhow!("read battery level: {:?}", e))?;
+        let charging = pm
+            .battery_charging()
+            .map_err(|e| anyhow::anyhow!("read charging: {:?}", e))?;
+        let charge_done = pm
+            .is_charge_done()
+            .map_err(|e| anyhow::anyhow!("read charge done: {:?}", e))?;
+        let discharging = pm
+            .is_discharging()
+            .map_err(|e| anyhow::anyhow!("read discharging: {:?}", e))?;
+        let vbus_present = pm
+            .vbus_present()
+            .map_err(|e| anyhow::anyhow!("read vbus: {:?}", e))?;
+
+        Ok(BatteryStatus {
+            level,
+            charging,
+            charge_done,
+            discharging,
+            vbus_present,
+        })
     }
 
     fn init_buttons(&mut self) -> Result<()> {
@@ -456,5 +496,9 @@ impl Board for JiangLianS3CamBoard {
 
     fn get_display(&mut self) -> &mut Self::DisplayDriver {
         return &mut self.display;
+    }
+
+    fn read_battery_status(&mut self) -> Result<BatteryStatus> {
+        self.read_battery_status_impl()
     }
 }

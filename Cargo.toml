@@ -4,7 +4,7 @@ version = "0.1.2"
 authors = ["任懷林 <renhuailin@gmail.com>"]
 edition = "2021"
 resolver = "2"
-rust-version = "1.77"
+rust-version = "1.87"
 
 [[bin]]
 name = "xiaoxin_esp32"

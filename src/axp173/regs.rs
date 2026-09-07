@@ -303,8 +303,10 @@ pub const POWER_OFF_CTL_SHUTDOWN: usize = 7;
 
 // POWER_STATUS register bits
 pub const POWER_STATUS_START_SOURCE_AC_VBUS: usize = 0;
-pub const POWER_STATUS_BATT_CHARGE_DISCHARGE: usize = 2;
-pub const POWER_STATUS_VBUS_PRESENT: usize = 5;
+pub const POWER_STATUS_BATT_CHARGE_DISCHARGE: usize = 2; // 电池电流方向：1=充电 0=放电
+pub const POWER_STATUS_VBUS_USABLE: usize = 4; // VBUS 电源可用
+pub const POWER_STATUS_VBUS_PRESENT: usize = 5; // VBUS 在位
+pub const POWER_STATUS_ACIN_USABLE: usize = 6; // ACIN 电源可用
 
 // POWER_MODE_CHGSTATUS register bits
 pub const POWER_MODE_CHGSTATUS_IS_CHARGING: usize = 6;

@@ -258,7 +258,10 @@ impl WifiStation for Esp32WifiDriver {
         }
         match wifi.get_ap_info() {
             Result::Ok(ap_info) => Ok(Some(ap_info.signal_strength)),
-            Err(_) => Ok(None),
+            Err(e) => {
+                warn!("get_ap_info failed, treat as not connected: {:?}", e);
+                Ok(None)
+            }
         }
     }
 }

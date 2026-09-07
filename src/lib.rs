@@ -4,6 +4,7 @@ pub mod axp173;
 pub mod boards;
 pub mod common;
 pub mod display;
+pub mod gui;
 pub mod i2s;
 pub mod led;
 pub mod protocols;

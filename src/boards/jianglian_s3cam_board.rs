@@ -6,12 +6,11 @@ use std::{
 use anyhow::{Error, Ok, Result};
 use chrono::Utc;
 use esp_idf_hal::{
-    gpio::AnyInputPin,
+    gpio::{AnyInputPin, PinDriver},
     i2c::{I2cConfig, I2cDriver},
     i2s::{
         config::{
-            Config, DataBitWidth, SlotMode, StdClkConfig, StdConfig, StdGpioConfig,
-            StdSlotConfig,
+            Config, DataBitWidth, SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
         },
         I2sBiDir, I2sDriver,
     },
@@ -27,7 +26,7 @@ use crate::{
     audio::codec::{audio_codec::AudioCodec, xiaozhi_audio_codec::XiaozhiAudioCodec},
     axp173::Axp173,
     boards::board::Board,
-    common::{application_context::ApplicationContext, gpio_button::Button},
+    common::{application_context::ApplicationContext, event::AppEvent, gpio_button::Button},
     display::{lcd::st7789::LcdSt7789, BatteryStatus, Display},
     wifi::{
         ssid_manager::SsidMananger,
@@ -55,6 +54,9 @@ pub struct JiangLianS3CamBoard {
 
     wifi_config_mode: bool,
     app_context: ApplicationContext,
+    /// NS4830 功放使能脚：拉高后由结构体长期持有，
+    /// 确保程序整个生命周期内引脚配置不被改写、电平保持高
+    _ns4830_ctrl: PinDriver<'static, esp_idf_hal::gpio::Output>,
 }
 
 impl JiangLianS3CamBoard {
@@ -64,6 +66,36 @@ impl JiangLianS3CamBoard {
 
         let sysloop = EspSystemEventLoop::take()?;
         let wifi_driver = Esp32WifiDriver::new(peripherals.modem, sysloop.clone())?;
+
+        // NS4830 功放控制脚：用 PinDriver 包装成推挽输出再拉高，
+        // 之后存入结构体长期持有，保证整个运行期间引脚一直输出高电平
+        // （pins.gpio10 只是引脚令牌，本身没有 set_high 方法）
+        let mut ns4830_ctrl = PinDriver::output(pins.gpio10)?;
+        ns4830_ctrl.set_high()?;
+
+        // GPIO21 上升沿监控（硬件中断方式）：输入 + 下拉（空闲为低），
+        // 注册 GPIO 正边沿中断；等待线程空闲时完全休眠（零 CPU 占用），
+        // 中断触发被唤醒后向应用主循环投递 AppEvent::Gpio21RisingEdge。
+        // PinDriver 泄漏成 'static 供监控线程独占持有。
+        let gpio21 = PinDriver::input(pins.gpio21, esp_idf_hal::gpio::Pull::Down)?;
+        let gpio21 = Box::leak(Box::new(gpio21));
+        let gpio21_sender = app_context.app_event_sender.clone();
+        let _ = std::thread::Builder::new()
+            .name("gpio21_monitor".into())
+            .stack_size(4 * 1024)
+            .spawn(move || loop {
+                // 阻塞等待上升沿：内部挂 GPIO ISR，事件驱动，无轮询
+                if let Err(e) = esp_idf_hal::task::block_on(gpio21.wait_for_rising_edge()) {
+                    log::error!("GPIO21 wait_for_rising_edge failed: {:?}", e);
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    continue;
+                }
+                log::info!("GPIO21 rising edge detected");
+                if let Err(e) = gpio21_sender.send(AppEvent::Gpio21RisingEdge) {
+                    log::error!("Failed to send Gpio21RisingEdge: {:?}", e);
+                    break;
+                }
+            });
 
         let dc = pins.gpio7;
         // SPI 总线引脚 (使用硬件 SPI2)
@@ -89,6 +121,7 @@ impl JiangLianS3CamBoard {
             &TimerConfig::new().frequency(25000.Hz().into()),
         )
         .unwrap();
+
         let backlight_pin = pins.gpio8;
 
         // 2. 配置LEDC通道，并绑定到背光引脚
@@ -187,6 +220,7 @@ impl JiangLianS3CamBoard {
             power_manager: None,
             speak_button: touch_button,
             volume_button,
+            _ns4830_ctrl: ns4830_ctrl,
             on_speak_button_clicked: None,
             on_volume_button_clicked: None,
             wifi_config_mode: false,

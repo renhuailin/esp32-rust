@@ -181,6 +181,7 @@ impl Protocol for WebSocketProtocol {
         let timeout = Duration::from_secs(10);
 
         let ws_url = "ws://192.168.3.5:8000/xiaozhi/v1/";
+        // let ws_url = "ws://192.168.1.184:8000/xiaozhi/v1/";
         // let ws_url = "ws://xiaogu.long9.net:8000/xiaozhi/v1/"; //阿里云上的服务
 
         let config = EspWebSocketClientConfig {
@@ -329,7 +330,7 @@ impl Protocol for WebSocketProtocol {
                         }
                         WebSocketEventType::Pong => {
                             *last_incoming_time.lock().unwrap() = Some(Instant::now());
-                            info!("Websocket pong");
+                            // info!("Websocket pong");
                         }
                     }
                 }
@@ -382,9 +383,7 @@ impl Protocol for WebSocketProtocol {
                         AppEvent::WebSocketClosed => {
                             error!("WebSocket disconnected before server hello");
                             self.close_audio_channel()?;
-                            return Err(Error::msg(
-                                "websocket disconnected before server hello",
-                            ));
+                            return Err(Error::msg("websocket disconnected before server hello"));
                         }
                         _ => {}
                     }

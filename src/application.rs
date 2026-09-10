@@ -30,8 +30,8 @@ use std::{
 use esp_idf_sys::{
     es32_component_esp_sr::wake_word_info_t, esp_partition_find, esp_partition_get,
     esp_partition_next, esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_APP_OTA_0,
-    esp_partition_type_t_ESP_PARTITION_TYPE_APP, i2s_port_t_I2S_NUM_0, i2s_start, i2s_stop,
-    i2s_zero_dma_buffer, setenv, settimeofday, timeval, tzset,
+    esp_partition_type_t_ESP_PARTITION_TYPE_APP, esp_restart, i2s_port_t_I2S_NUM_0, i2s_start,
+    i2s_stop, i2s_zero_dma_buffer, setenv, settimeofday, timeval, tzset,
 };
 use log::{error, info, warn};
 
@@ -906,7 +906,7 @@ impl Application {
     fn refresh_wifi_signal(&mut self) {
         match self.board.get_wifi_driver().get_rssi() {
             Ok(rssi) => {
-                log::info!("WiFi RSSI: {:?}", rssi);
+                // log::info!("WiFi RSSI: {:?}", rssi);
                 self.board.get_display().show_wifi_signal(rssi);
             }
             Err(e) => log::warn!("Failed to read WiFi RSSI: {:?}", e),
@@ -1457,6 +1457,14 @@ impl Application {
 
                         AppEvent::RefreshBattery => {
                             self.refresh_battery_status();
+                        }
+
+                        AppEvent::Gpio21RisingEdge => {
+                            // TODO: 在此处理 GPIO21 上升沿事件
+                            info!("GPIO21 rising edge event1");
+                            unsafe {
+                                esp_restart();
+                            }
                         }
 
                         _ => {

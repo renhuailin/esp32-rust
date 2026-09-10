@@ -66,4 +66,5 @@ pub enum AppEvent {
     PlayAudioAlert(String), //播放内置的提示音频
     RefreshWifiSignal,      // 定时刷新 WiFi 信号强度
     RefreshBattery,         // 定时刷新电池状态（电量/充电/USB）
+    Gpio21RisingEdge,       // GPIO21 检测到低→高电平切换
 }
